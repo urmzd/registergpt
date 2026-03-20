@@ -38,6 +38,8 @@ class Hyperparameters:
     val_files = os.path.join(data_path, "fineweb_val_*.bin")
     tokenizer_path = os.environ.get("TOKENIZER_PATH", "./data/tokenizers/fineweb_1024_bpe.model")
     run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
+    resume_from = os.environ.get("RESUME", "")  # path to checkpoint .pt file
+    checkpoint_every = int(os.environ.get("CHECKPOINT_EVERY", 500))
     seed = int(os.environ.get("SEED", 1337))
 
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
@@ -724,20 +726,41 @@ def main():
         rms = max(max_wc_ms - elapsed_ms, 0.0)
         return rms / max(wms, 1e-9) if rms <= wms else 1.0
 
-    # Warmup
-    for ws in range(args.warmup_steps):
-        optimizer.zero_grad(set_to_none=True)
-        for _ in range(grad_accum_steps):
-            x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                loss = model(x, y)
-            (loss * grad_scale).backward()
-        if args.grad_clip_norm > 0:
-            torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
-        optimizer.step()
-        torch.cuda.synchronize()
-        if master and (ws + 1) % 10 == 0 or ws + 1 == args.warmup_steps:
-            log0(f"warmup:{ws + 1}/{args.warmup_steps}")
+    # Resume from checkpoint if provided
+    start_step = 0
+    if args.resume_from and Path(args.resume_from).exists():
+        ckpt = torch.load(args.resume_from, map_location=device, weights_only=False)
+        base_model.load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        start_step = ckpt["step"]
+        log0(f"resumed from {args.resume_from} at step {start_step}")
+
+    def save_checkpoint(step):
+        if not master:
+            return
+        ckpt_path = f"logs/{args.run_id}_ckpt.pt"
+        torch.save({
+            "model": base_model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "step": step,
+        }, ckpt_path)
+        log0(f"checkpoint:{ckpt_path} step:{step}")
+
+    # Warmup (skip if resuming)
+    if start_step == 0:
+        for ws in range(args.warmup_steps):
+            optimizer.zero_grad(set_to_none=True)
+            for _ in range(grad_accum_steps):
+                x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    loss = model(x, y)
+                (loss * grad_scale).backward()
+            if args.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
+            optimizer.step()
+            torch.cuda.synchronize()
+            if master and (ws + 1) % 10 == 0 or ws + 1 == args.warmup_steps:
+                log0(f"warmup:{ws + 1}/{args.warmup_steps}")
 
     train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
 
@@ -745,7 +768,7 @@ def main():
     train_ms = 0.0
     stop_after = None
     t0 = time.perf_counter()
-    step = 0
+    step = start_step
     while True:
         last = step == args.iterations or (stop_after is not None and step >= stop_after)
         if last or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
@@ -784,6 +807,11 @@ def main():
             log0(f"step:{step}/{args.iterations} train_loss:{train_loss_accum:.4f} time:{approx_ms:.0f}ms avg:{approx_ms / step:.1f}ms tok/s:{args.train_batch_tokens / (step_ms / 1000):.0f}")
         if max_wc_ms and stop_after is None and approx_ms >= max_wc_ms:
             stop_after = step
+        if args.checkpoint_every > 0 and step % args.checkpoint_every == 0:
+            save_checkpoint(step)
+
+    # Final checkpoint
+    save_checkpoint(step)
 
     # Serialize
     if master:
