@@ -12,8 +12,10 @@ cd agi-models
 # Install uv
 if ! command -v uv &>/dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
 fi
+# Ensure uv is on PATH for this session and future shells
+export PATH="$HOME/.local/bin:$PATH"
+grep -q '.local/bin' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 # Install Python deps (system pip for RunPod compatibility)
 pip install -q huggingface_hub sentencepiece 2>/dev/null || \

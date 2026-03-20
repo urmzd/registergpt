@@ -126,7 +126,7 @@ CONTROL_TENSOR_NAME_PATTERNS = (
     # tpg additions
     "halt_proj", "act_selector", "scale_gate", "t_scale",
     # sparse register additions (v12)
-    "route_logits", "mem_scale", "mlp_scale",
+    "mem_scale", "write_scale", "mlp_bias",
 )
 
 # -----------------------------
