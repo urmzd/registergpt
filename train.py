@@ -825,7 +825,7 @@ def main():
     use_compile = bool(int(os.environ.get("TORCH_COMPILE", "0")))
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True) if use_compile else base_model
     log0(f"[init] wrapping with DDP (distributed={distributed})")
-    model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False, find_unused_parameters=True) if distributed else compiled_model
+    model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
     log0(f"[init] DDP ready")
 
     optimizer = torch.optim.Adam(
