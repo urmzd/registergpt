@@ -488,9 +488,7 @@ def main():
     rank = int(os.environ.get("RANK", "0"))
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    if 8 % world_size != 0:
-        raise ValueError(f"WORLD_SIZE={world_size} must divide 8")
-    grad_accum_steps = 8 // world_size
+    grad_accum_steps = int(os.environ.get("GRAD_ACCUM_STEPS", str(8 // world_size)))
     grad_scale = 1.0 / grad_accum_steps
 
     if not torch.cuda.is_available():
