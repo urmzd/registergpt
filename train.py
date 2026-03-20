@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 import zlib
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -511,9 +512,11 @@ def main():
 
     def log0(msg, console=True):
         if not master: return
-        if console: print(msg)
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        if console: print(line)
         if logfile:
-            with open(logfile, "a") as f: print(msg, file=f)
+            with open(logfile, "a") as f: print(line, file=f)
 
     log0(code, console=False)
 
