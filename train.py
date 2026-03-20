@@ -377,7 +377,12 @@ class CausalSelfAttention(nn.Module):
         cos, sin = self.rotary(T, x.device, q.dtype)
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q = q * self.q_gain.to(q.dtype)[None, :, None, None]
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=(self.num_kv_heads != self.num_heads))
+        # Expand KV heads to match Q heads for older PyTorch without enable_gqa
+        if self.num_kv_heads != self.num_heads:
+            rep = self.num_heads // self.num_kv_heads
+            k = k.repeat_interleave(rep, dim=1)
+            v = v.repeat_interleave(rep, dim=1)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         return self.proj(y.transpose(1, 2).contiguous().reshape(B, T, D))
 
 
