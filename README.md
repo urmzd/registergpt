@@ -27,18 +27,19 @@ No embedding matrix. No output projection. Interpretability by construction.
 
 ## Architecture Iterations
 
-| Version | Cross-position | Within-position | Params | val_bpb | Status |
-|---------|---------------|-----------------|--------|---------|--------|
-| [v0](v0_register_lm/) | Shared attention | Fourier ops | 485K | — | Prototype |
-| [v1](v1_shared_attention/) | Shared attention | Fourier ops | 3.2M | **2.83** | Best so far |
-| [v2](v2_causal_conv/) | Depthwise conv | Fourier ops | 1.3M | — | Abandoned |
-| [v3](v3_assoc_memory/) | Assoc memory (Fourier proj) | Fourier ops | 328K–1.7M | ~3.9 | Fourier bottleneck |
-| [v4](v4_param_optimized/) | Assoc memory (shared Q/K) | Factored ops | 101K | **3.65** | Promising |
-| [v5](v5_gauss_fft/) | FFT-based assoc memory | FFT ops | 919K | ~4.1 | Flat loss |
-| [v6](v6_brain_wave/) | Oscillatory coupling | Band-specific ops | 824K | ~3.7 | Flat loss |
-| [v7](v7_lgp/) | Causal decay memory | Learned program (op bank) | — | — | Ready |
-| [v8](v8_word_graph/) | Word activation similarity | V×V interaction graph | — | — | Ready |
-| **[v9](v9_meta_state/)** | **Evolving Q-table (dense)** | **Dense MLP** | **~4.2M** | — | **Testing** |
+| Version | Cross-position | Within-position | Params | Size (int8) | val_bpb | Status |
+|---------|---------------|-----------------|--------|-------------|---------|--------|
+| [v0](v0_register_lm/) | Shared attention | Fourier ops | 485K | ~500KB | — | Prototype |
+| [v1](v1_shared_attention/) | Shared attention | Fourier ops | 3.2M | 1.6MB | **2.83** | Best bpb |
+| [v2](v2_causal_conv/) | Depthwise conv | Fourier ops | 1.3M | ~1.3MB | — | Abandoned |
+| [v3](v3_assoc_memory/) | Assoc memory (Fourier) | Fourier ops | 328K–1.7M | ~1.7MB | ~3.9 | Fourier bottleneck |
+| [v4](v4_param_optimized/) | Assoc memory (shared Q/K) | Factored ops | 101K | 419KB | 3.65 | Smallest |
+| [v5](v5_gauss_fft/) | FFT-based assoc memory | FFT ops | 919K | ~900KB | ~4.1 | Flat loss |
+| [v6](v6_brain_wave/) | Oscillatory coupling | Band-specific ops | 824K | ~800KB | ~3.7 | Flat loss |
+| [v7](v7_lgp/) | Causal decay memory | Learned program (op bank) | — | — | — | Ready |
+| [v8](v8_word_graph/) | Word activation similarity | V×V interaction graph | — | — | — | Ready |
+| **[v9](v9_meta_state/)** | **Evolving Q-table (dense)** | **Dense MLP** | **4.2M** | **9.3MB** | **3.32** | **Still dropping** |
+| [v10](v10_policy/) | Causal decay + policy | State-dependent ops | — | — | — | Ready |
 
 ### Key finding
 
