@@ -6,4 +6,5 @@ logs/
 *.pt
 *.ptz
 .DS_Store
-data/
+data/datasets/
+data/tokenizers/
