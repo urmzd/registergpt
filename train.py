@@ -730,10 +730,16 @@ def main():
     start_step = 0
     if args.resume_from and Path(args.resume_from).exists():
         ckpt = torch.load(args.resume_from, map_location=device, weights_only=False)
-        base_model.load_state_dict(ckpt["model"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        start_step = ckpt["step"]
-        log0(f"resumed from {args.resume_from} at step {start_step}")
+        if "model" in ckpt and "step" in ckpt:
+            # Full checkpoint (model + optimizer + step)
+            base_model.load_state_dict(ckpt["model"])
+            optimizer.load_state_dict(ckpt["optimizer"])
+            start_step = ckpt["step"]
+            log0(f"resumed checkpoint from {args.resume_from} at step {start_step}")
+        else:
+            # Plain state dict (weights only)
+            base_model.load_state_dict(ckpt, strict=False)
+            log0(f"loaded weights from {args.resume_from} (no optimizer/step, restarting from 0)")
 
     def save_checkpoint(step):
         if not master:
