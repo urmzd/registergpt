@@ -50,7 +50,7 @@ class Hyperparameters:
     warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
     train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
     train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
-    max_wallclock_seconds = float(os.environ.get("MAX_WALLCLOCK_SECONDS", 600.0))
+    max_wallclock_seconds = float(os.environ["MAX_WALLCLOCK_SECONDS"]) if "MAX_WALLCLOCK_SECONDS" in os.environ else None
 
     # Model
     model_version = os.environ.get("MODEL_VERSION", "v3")
@@ -100,6 +100,8 @@ class Hyperparameters:
     # sparse-register-specific (v12)
     k_active = int(os.environ.get("K_ACTIVE", 256))
     inner_mul = int(os.environ.get("INNER_MUL", 2))
+    parallel_waves = bool(int(os.environ.get("PARALLEL_WAVES", "1")))
+    grad_checkpoint = bool(int(os.environ.get("GRAD_CHECKPOINT", "0")))
 
     # Optimizer
     lr = float(os.environ.get("LR", 0.03))
@@ -789,6 +791,8 @@ def main():
             logit_softcap=args.logit_softcap,
             activation=args.activation,
             decay_init=args.decay_init,
+            parallel_waves=args.parallel_waves,
+            grad_checkpoint=args.grad_checkpoint,
         ).to(device).bfloat16()
     elif args.model_version == "tpg":
         from v11_tpg.model import TPGGPT
@@ -862,7 +866,7 @@ def main():
     log0(f"[init] loading training data from {args.train_files}")
     train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
 
-    max_wc_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
+    max_wc_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds else None
 
     def lr_mul(step, elapsed_ms):
         if args.warmdown_iters <= 0:

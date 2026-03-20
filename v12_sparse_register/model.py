@@ -34,6 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as grad_checkpoint_fn
 
 
 class CausalDecayMemory(nn.Module):
@@ -81,6 +82,9 @@ class SparseRegisterStep(nn.Module):
     Routing indices and selector matrices are pre-computed at init time
     as non-parameter buffers. The forward pass uses only standard ops
     (gather, matmul) that are fully DDP-compatible.
+
+    Returns the V-dimensional delta (not x + delta). The caller manages
+    the residual connection, enabling parallel wave execution.
     """
 
     def __init__(self, vocab_size: int, k_active: int, inner_mul: int = 2,
@@ -108,6 +112,7 @@ class SparseRegisterStep(nn.Module):
         write_selector[torch.arange(k_active), write_indices] = 1.0
 
         self.register_buffer("read_indices", read_indices)
+        self.register_buffer("write_indices", write_indices)
         self.register_buffer("write_selector", write_selector)
 
         # Cross-position: causal decay memory in k-dim
@@ -162,10 +167,45 @@ class SparseRegisterStep(nn.Module):
         output = output * (self.write_scale.to(dtype) * self.inv_sqrt_k)
 
         # WRITE: matmul with pre-computed selector (k,V) → full V-dim delta
-        # This replaces scatter with a standard matmul — fully DDP-safe.
         # output: (B, T, k) @ write_selector: (k, V) → (B, T, V)
-        write_full = output @ self.write_selector.to(dtype)
-        return x + write_full
+        return output @ self.write_selector.to(dtype)
+
+
+def _compute_waves(steps: nn.ModuleList) -> list[list[int]]:
+    """Group steps into parallel waves based on register set conflicts.
+
+    Two steps can run in the same wave (from the same x snapshot) if:
+      - Neither step's write set overlaps the other's read set
+      - Their write sets don't overlap each other
+    This ensures the deltas are independent and can be summed.
+    """
+    n = len(steps)
+    read_sets = [set(steps[i].read_indices.tolist()) for i in range(n)]
+    write_sets = [set(steps[i].write_indices.tolist()) for i in range(n)]
+
+    def conflicts(i: int, j: int) -> bool:
+        return bool(
+            write_sets[i] & read_sets[j]
+            or write_sets[j] & read_sets[i]
+            or write_sets[i] & write_sets[j]
+        )
+
+    # Greedy wave assignment
+    waves: list[list[int]] = []
+    assigned = set()
+    for i in range(n):
+        if i in assigned:
+            continue
+        wave = [i]
+        assigned.add(i)
+        for j in range(i + 1, n):
+            if j in assigned:
+                continue
+            if not any(conflicts(j, w) for w in wave):
+                wave.append(j)
+                assigned.add(j)
+        waves.append(wave)
+    return waves
 
 
 class SparseRegisterGPT(nn.Module):
@@ -178,17 +218,26 @@ class SparseRegisterGPT(nn.Module):
     The routing is fixed per step (not input-dependent), initialized
     with staggered read/write patterns for diversity and coverage.
 
+    Supports two execution optimizations:
+      - parallel_waves: groups non-conflicting steps into waves that
+        execute from the same x snapshot, summing their deltas.
+      - grad_checkpoint: gradient checkpointing to trade compute for
+        memory, enabling larger batch sizes.
+
     No embedding. No output projection. No Fourier. No attention.
     """
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 12,
                  k_active: int = 256, inner_mul: int = 2,
                  logit_softcap: float = 30.0, activation: str = "gelu",
-                 decay_init: float = 3.0):
+                 decay_init: float = 3.0, parallel_waves: bool = True,
+                 grad_checkpoint: bool = False):
         super().__init__()
         self.vocab_size = vocab_size
         self.num_steps = num_steps
         self.logit_softcap = logit_softcap
+        self.use_parallel_waves = parallel_waves
+        self.use_grad_checkpoint = grad_checkpoint
 
         self.steps = nn.ModuleList([
             SparseRegisterStep(vocab_size, k_active, inner_mul,
@@ -199,13 +248,29 @@ class SparseRegisterGPT(nn.Module):
 
         self.logit_scale = nn.Parameter(torch.tensor(1.0))
 
+        # Pre-compute wave groupings
+        self.waves = _compute_waves(self.steps)
+
     def forward(self, input_ids: Tensor, target_ids: Tensor) -> Tensor:
         V = self.vocab_size
         x = F.one_hot(input_ids, V).to(dtype=torch.bfloat16)
         x = F.rms_norm(x, (V,))
 
-        for step in self.steps:
-            x = step(x)
+        if self.use_parallel_waves:
+            for wave in self.waves:
+                if self.use_grad_checkpoint:
+                    deltas = [grad_checkpoint_fn(self.steps[i], x,
+                              use_reentrant=False) for i in wave]
+                else:
+                    deltas = [self.steps[i](x) for i in wave]
+                x = x + sum(deltas)
+        else:
+            for step in self.steps:
+                if self.use_grad_checkpoint:
+                    delta = grad_checkpoint_fn(step, x, use_reentrant=False)
+                else:
+                    delta = step(x)
+                x = x + delta
 
         x = F.rms_norm(x, (V,))
         logits = x * self.logit_scale.to(x.dtype)
