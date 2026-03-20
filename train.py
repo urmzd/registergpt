@@ -647,17 +647,22 @@ def main():
             with open(logfile, "a") as f: print(line, file=f)
 
     log0(code, console=False)
+    log0(f"[init] rank={rank} world_size={world_size} device={device} model_version={args.model_version}")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
+    log0(f"[init] loading tokenizer from {args.tokenizer_path}")
     sp = spm.SentencePieceProcessor(model_file=args.tokenizer_path)
     if int(sp.vocab_size()) != args.vocab_size:
         raise ValueError(f"VOCAB_SIZE mismatch")
+    log0(f"[init] loading validation data from {args.val_files}")
     val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
     bbl, hsl, ibl = build_sentencepiece_luts(sp, args.vocab_size, device)
+    log0(f"[init] data loaded: {val_tokens.numel()} val tokens")
+    log0(f"[init] building model: {args.model_version}")
 
     if args.model_version == "v1":
         from v1_shared_attention.model import RegisterGPT as RegisterGPTv1
@@ -814,9 +819,14 @@ def main():
             if (p.ndim < 2 or any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS)) and p.dtype != torch.float32:
                 p.data = p.data.float()
 
+    n_params = sum(p.numel() for p in base_model.parameters())
+    log0(f"[init] model built: {n_params/1e3:.0f}K params on {device}")
+
     use_compile = bool(int(os.environ.get("TORCH_COMPILE", "0")))
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True) if use_compile else base_model
+    log0(f"[init] wrapping with DDP (distributed={distributed})")
     model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False, find_unused_parameters=True) if distributed else compiled_model
+    log0(f"[init] DDP ready")
 
     optimizer = torch.optim.Adam(
         base_model.parameters(),
@@ -849,6 +859,7 @@ def main():
     log0(f"NO attention. NO embedding. NO output projection.")
     log0(f"world_size:{world_size} grad_accum:{grad_accum_steps} batch:{args.train_batch_tokens}")
 
+    log0(f"[init] loading training data from {args.train_files}")
     train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
 
     max_wc_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds > 0 else None
@@ -891,6 +902,7 @@ def main():
         log0(f"checkpoint:{ckpt_path} step:{step}")
 
     # Warmup (skip if resuming)
+    log0(f"[init] starting warmup ({args.warmup_steps} steps)")
     if start_step == 0:
         for ws in range(args.warmup_steps):
             optimizer.zero_grad(set_to_none=True)
