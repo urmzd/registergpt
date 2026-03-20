@@ -751,9 +751,11 @@ def main():
 
     n_params = sum(p.numel() for p in base_model.parameters())
     n_trainable = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+    raw_bytes = sum(p.numel() * p.element_size() for p in base_model.parameters())
+    est_int8_bytes = sum(p.numel() for p in base_model.parameters())  # ~1 byte per param
     log0(f"run_id:{args.run_id}")
     log0(f"model_version:{args.model_version}")
-    log0(f"model_params:{n_params} trainable:{n_trainable} vocab=dim={args.vocab_size}")
+    log0(f"model_params:{n_params} trainable:{n_trainable} vocab=dim={args.vocab_size} raw:{raw_bytes/1e6:.1f}MB est_int8:{est_int8_bytes/1e6:.1f}MB")
     if args.model_version == "wave":
         log0(f"architecture:BrainWaveGPT (oscillatory dynamics, cross-frequency coupling)")
         log0(f"cycles:{args.num_steps} channels:{args.n_channels} fourier:{args.n_fourier_basis} bands:{args.band_split}")
