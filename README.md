@@ -1,10 +1,10 @@
-# RegisterGPT
+# AGI Models
 
-A language model where **each register is a word**.
+Experimental architectures exploring **interpretable, efficient computation** for language modeling — where the model's internal state is always human-readable.
 
-## The Idea
+## Core Principle
 
-Standard transformers map tokens into opaque embedding spaces. RegisterGPT keeps computation in vocabulary space the entire time:
+Standard transformers map tokens into opaque embedding spaces. These models keep computation in **vocabulary space** the entire time:
 
 ```
 Input:  one-hot("cat") → R["cat"] = 1.0, all else 0.0
@@ -12,7 +12,14 @@ State:  always a distribution over words
 Output: register state IS the prediction — R["dog"]=0.3, R["mat"]=0.25
 ```
 
-No embedding matrix. No output projection. Every intermediate state is readable as "which words are active and how strongly."
+No embedding matrix. No output projection. Every intermediate state is readable as "which words are active and how strongly." Interpretability by construction, not by post-hoc analysis.
+
+## Research Questions
+
+1. **Can we build competitive LMs without attention?** Using associative memory, convolutions, or FFT-based operations instead.
+2. **What is the minimum mathematical machinery needed?** All architectures here use math from the 1970s or earlier — dot products, outer products, Fourier transforms.
+3. **Can LGP-style register machines scale to language?** Sequential execution of cheap operations on a narrow register bank, inspired by [linear-gp](https://github.com/urmzd/linear-gp).
+4. **What happens when hidden_dim = vocab_size?** The model thinks in word-space, not in a learned latent space.
 
 ## Architecture Iterations
 
@@ -20,35 +27,47 @@ No embedding matrix. No output projection. Every intermediate state is readable 
 |---------|----------------------|-----------------|--------|-------------|--------|
 | [v0](v0_register_lm/) | Shared attention | Fourier ops | 485K | — | Prototype (uses learned embeddings) |
 | [v1](v1_shared_attention/) | Shared attention | Fourier ops | 3.2M | **2.83** | Best so far |
-| [v2](v2_causal_conv/) | Depthwise causal conv | Fourier ops | 1.3M | — | Abandoned (slow, barely learned) |
+| [v2](v2_causal_conv/) | Depthwise causal conv | Fourier ops | 1.3M | — | Abandoned |
 | [v3](v3_assoc_memory/) | Associative memory | Fourier ops | 328K–1.7M | — | In progress |
-| [v4](v4_param_optimized/) | Assoc memory (shared Q/K) | Factored ops | ~101K | — | Design only |
-| [v_gauss](v_gauss/) | FFT-based assoc memory | FFT register ops | — | — | Design only |
+| [v4](v4_param_optimized/) | Assoc memory (shared Q/K) | Factored ops | ~101K | — | In progress |
+| [v_gauss](v_gauss/) | FFT-based assoc memory | FFT register ops | — | — | In progress |
 
-Active development is in `model.py` / `train.py` at the root.
+## Quick Start
 
-## Usage
-
-**GPU** (requires [parameter-golf](https://github.com/openai/parameter-golf) data in `./data/`):
 ```bash
+# Download data
+pip install huggingface_hub sentencepiece
+python data/download_data.py --variant sp1024
+
+# Train (single GPU)
 torchrun --standalone --nproc_per_node=1 train.py
+
+# Train a specific model version
+MODEL_VERSION=gauss torchrun --standalone --nproc_per_node=1 train.py
+MODEL_VERSION=v4 torchrun --standalone --nproc_per_node=1 train.py
 ```
 
-All hyperparameters are configurable via environment variables. See [AGENTS.md](AGENTS.md) for the full list.
+All hyperparameters are configurable via environment variables. See [AGENTS.md](AGENTS.md).
 
 ## Project Structure
 
 ```
-model.py / train.py           # Current iteration (v3)
-v0_register_lm/               # Original prototype with learned embeddings
+train.py                       # Unified training script (all models)
+model.py                       # Current model (v3 reference)
+model_v4.py                    # v4 param-optimized model
+data/download_data.py          # Data download (FineWeb sp1024)
+v0_register_lm/               # Original prototype
 v1_shared_attention/           # Shared attention (best results)
 v2_causal_conv/                # Depthwise conv (abandoned)
-v3_assoc_memory/               # Associative memory (in progress)
-v4_param_optimized/            # Param-optimized design (untrained)
-v_gauss/                       # FFT-based design (untrained)
+v3_assoc_memory/               # Associative memory
+v4_param_optimized/            # Param-optimized design
+v_gauss/                       # FFT-based design
 docs/                          # Research notes and design docs
 ```
 
-## Context
+## Inspirations
 
-Built for [OpenAI Parameter Golf](https://github.com/openai/parameter-golf). Inspired by [linear-gp](https://github.com/urmzd/linear-gp) — where complex behavior emerges from sequential execution of cheap operations on a narrow register bank.
+- [Linear Genetic Programming](https://github.com/urmzd/linear-gp) — complex behavior from sequential execution of cheap operations on a narrow register bank
+- [OpenAI Parameter Golf](https://github.com/openai/parameter-golf) — training constraints that force architectural innovation
+- Hopfield networks (1982) — associative memory via outer products
+- Gauss's FFT (1805) — frequency-domain computation predating modern ML by 220 years

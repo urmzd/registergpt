@@ -66,6 +66,11 @@ class Hyperparameters:
     unique_steps = int(os.environ.get("UNIQUE_STEPS", 5))
     invocations_per_step = int(os.environ.get("INVOCATIONS_PER_STEP", 2))
 
+    # wave-specific
+    slow_decay_init = float(os.environ.get("SLOW_DECAY_INIT", 4.0))
+    fast_decay_init = float(os.environ.get("FAST_DECAY_INIT", 2.0))
+    band_split = os.environ.get("BAND_SPLIT", "4,4,8")
+
     # Optimizer
     lr = float(os.environ.get("LR", 0.03))
     beta1 = float(os.environ.get("BETA1", 0.9))
@@ -556,129 +561,10 @@ class GaussRegisterGPT(nn.Module):
 
 
 # -----------------------------
-# V4 MODEL (param-optimized)
+# V4 MODEL (param-optimized, see model_v4.py for documented implementation)
 # -----------------------------
 
-def make_fourier_basis(dim, n_basis):
-    pos = torch.arange(dim, dtype=torch.float32) / dim
-    basis = torch.zeros(dim, 2 * n_basis)
-    for k in range(n_basis):
-        basis[:, 2 * k] = torch.cos(2 * math.pi * (k + 1) * pos)
-        basis[:, 2 * k + 1] = torch.sin(2 * math.pi * (k + 1) * pos)
-    return basis
-
-
-class MultiHeadAssociativeMemory(nn.Module):
-    """Multi-head associative memory with shared Q/K."""
-    def __init__(self, n_basis, n_channels, n_heads=4, decay_init=3.0):
-        super().__init__()
-        self.n_channels = n_channels
-        self.n_heads = n_heads
-        self.head_dim = n_channels // n_heads
-        self.value_proj = FourierProjection(n_basis, n_channels)
-        self.output_proj = FourierProjection(n_basis, n_channels)
-        self.decay_logits = nn.Parameter(torch.linspace(1.0, 5.0, n_heads))
-        self.out_scale = nn.Parameter(torch.tensor(0.1))
-
-    def forward(self, x, basis, shared_q_w, shared_k_w):
-        B, T, V = x.shape
-        H, D = self.n_heads, self.head_dim
-        dtype = x.dtype
-        v_w = self.value_proj(basis).to(dtype)
-        o_w = self.output_proj(basis).to(dtype)
-        queries = F.normalize(x @ shared_q_w, dim=-1)
-        keys = F.normalize(x @ shared_k_w, dim=-1)
-        values = x @ v_w
-        queries = queries.view(B, T, H, D).permute(0, 2, 1, 3)
-        keys = keys.view(B, T, H, D).permute(0, 2, 1, 3)
-        values = values.view(B, T, H, D).permute(0, 2, 1, 3)
-        scores = torch.matmul(queries, keys.transpose(-1, -2))
-        decay = torch.sigmoid(self.decay_logits)
-        pos = torch.arange(T, device=x.device)
-        diff = pos.unsqueeze(0) - pos.unsqueeze(1)
-        causal_mask = (diff > 0)
-        decay_weights = (decay.view(H, 1, 1) ** (diff.float() - 1).clamp(min=0).unsqueeze(0)) * causal_mask.unsqueeze(0)
-        scores = scores * decay_weights.to(dtype).unsqueeze(0)
-        retrieved = torch.matmul(scores, values)
-        retrieved = retrieved.permute(0, 2, 1, 3).reshape(B, T, -1)
-        return retrieved @ o_w.T * self.out_scale.to(dtype)
-
-
-class EfficientRegisterOp(nn.Module):
-    """Within-position transform with factored channel_mix."""
-    def __init__(self, n_basis, n_channels, transform_rank=8, activation="gelu"):
-        super().__init__()
-        self.activation = activation
-        s = 0.02
-        self.read_coeffs = nn.Parameter(torch.randn(n_channels, 2 * n_basis) * s)
-        self.write_coeffs = nn.Parameter(torch.randn(n_channels, 2 * n_basis) * s)
-        self.diag = nn.Parameter(torch.ones(n_channels) * s)
-        self.mix_down = nn.Parameter(torch.randn(n_channels, transform_rank) * s)
-        self.mix_up = nn.Parameter(torch.randn(transform_rank, n_channels) * s)
-        self.bias = nn.Parameter(torch.zeros(n_channels))
-        self.out_scale = nn.Parameter(torch.tensor(0.1))
-
-    def forward(self, x, basis):
-        dtype = x.dtype
-        read_w = torch.softmax(basis @ self.read_coeffs.T, dim=0).to(dtype)
-        values = x @ read_w
-        values = values * self.diag.to(dtype) + (values @ self.mix_down.to(dtype)) @ self.mix_up.to(dtype) + self.bias.to(dtype)
-        values = apply_activation(values, self.activation)
-        write_w = (basis @ self.write_coeffs.T).to(dtype)
-        return values @ write_w.T * self.out_scale.to(dtype)
-
-
-class RegisterStepV4(nn.Module):
-    """V4 step with shared Q/K and efficient register op."""
-    def __init__(self, n_basis, n_channels, n_heads=4, transform_rank=8,
-                 activation="gelu", decay_init=3.0):
-        super().__init__()
-        self.memory = MultiHeadAssociativeMemory(n_basis, n_channels, n_heads, decay_init)
-        self.register_op = EfficientRegisterOp(n_basis, n_channels, transform_rank, activation)
-        self.mem_scale = nn.Parameter(torch.ones(1))
-        self.op_scale = nn.Parameter(torch.ones(1))
-
-    def forward(self, x, basis, shared_q_w, shared_k_w):
-        D = x.size(-1)
-        x = x + self.mem_scale.to(x.dtype) * self.memory(F.rms_norm(x, (D,)), basis, shared_q_w, shared_k_w)
-        x = x + self.op_scale.to(x.dtype) * self.register_op(F.rms_norm(x, (D,)), basis)
-        return x
-
-
-class RegisterGPTv4(nn.Module):
-    """Param-optimized register machine with shared Q/K and step reuse."""
-    def __init__(self, vocab_size=1024, unique_steps=5, invocations_per_step=2,
-                 n_fourier_basis=16, n_channels=128, n_heads=4, transform_rank=8,
-                 logit_softcap=30.0, activation="gelu", decay_init=3.0):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.unique_steps = unique_steps
-        self.invocations_per_step = invocations_per_step
-        self.logit_softcap = logit_softcap
-        self.shared_query_proj = FourierProjection(n_fourier_basis, n_channels)
-        self.shared_key_proj = FourierProjection(n_fourier_basis, n_channels)
-        self.steps = nn.ModuleList([
-            RegisterStepV4(n_fourier_basis, n_channels, n_heads, transform_rank, activation, decay_init)
-            for _ in range(unique_steps)
-        ])
-        self.logit_scale = nn.Parameter(torch.tensor(1.0))
-        self.register_buffer("fourier_basis", make_fourier_basis(vocab_size, n_fourier_basis))
-
-    def forward(self, input_ids, target_ids):
-        V = self.vocab_size
-        x = F.one_hot(input_ids, V).to(dtype=torch.bfloat16)
-        x = F.rms_norm(x, (V,))
-        basis = self.fourier_basis
-        dtype = x.dtype
-        shared_q_w = self.shared_query_proj(basis).to(dtype)
-        shared_k_w = self.shared_key_proj(basis).to(dtype)
-        for step in self.steps:
-            for _ in range(self.invocations_per_step):
-                x = step(x, basis, shared_q_w, shared_k_w)
-        x = F.rms_norm(x, (V,))
-        logits = x * self.logit_scale.to(dtype)
-        logits = self.logit_softcap * torch.tanh(logits / self.logit_softcap)
-        return F.cross_entropy(logits.float().reshape(-1, V), target_ids.reshape(-1), reduction="mean")
+from model_v4 import RegisterGPTv4
 
 
 # -----------------------------
@@ -735,7 +621,21 @@ def main():
     val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
     bbl, hsl, ibl = build_sentencepiece_luts(sp, args.vocab_size, device)
 
-    if args.model_version == "v4":
+    if args.model_version == "wave":
+        from wave_model import BrainWaveGPT
+        band_split = tuple(int(x) for x in args.band_split.split(","))
+        base_model = BrainWaveGPT(
+            vocab_size=args.vocab_size,
+            num_cycles=args.num_steps,
+            n_fourier_basis=args.n_fourier_basis,
+            n_channels=args.n_channels,
+            logit_softcap=args.logit_softcap,
+            activation=args.activation,
+            slow_decay_init=args.slow_decay_init,
+            fast_decay_init=args.fast_decay_init,
+            band_split=band_split,
+        ).to(device).bfloat16()
+    elif args.model_version == "v4":
         base_model = RegisterGPTv4(
             vocab_size=args.vocab_size,
             unique_steps=args.unique_steps,
@@ -796,7 +696,11 @@ def main():
     log0(f"run_id:{args.run_id}")
     log0(f"model_version:{args.model_version}")
     log0(f"model_params:{n_params} trainable:{n_trainable} vocab=dim={args.vocab_size}")
-    if args.model_version == "v4":
+    if args.model_version == "wave":
+        log0(f"architecture:BrainWaveGPT (oscillatory dynamics, cross-frequency coupling)")
+        log0(f"cycles:{args.num_steps} channels:{args.n_channels} fourier:{args.n_fourier_basis} bands:{args.band_split}")
+        log0(f"slow_decay_init:{args.slow_decay_init} fast_decay_init:{args.fast_decay_init}")
+    elif args.model_version == "v4":
         log0(f"unique_steps:{args.unique_steps} invocations:{args.invocations_per_step} depth:{args.unique_steps * args.invocations_per_step}")
         log0(f"channels:{args.n_channels} heads:{args.n_heads} rank:{args.transform_rank} fourier:{args.n_fourier_basis}")
     else:
