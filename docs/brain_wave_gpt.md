@@ -317,6 +317,142 @@ The missing piece: **coupling between frequency bands** and **phase-dependent ga
 
 ---
 
+## Mathematical Framework
+
+### Notation
+
+| Symbol | Meaning |
+|--------|---------|
+| $V$ | Vocabulary size (= register dimension) |
+| $T$ | Sequence length |
+| $B$ | Batch size |
+| $K$ | Total Fourier basis pairs |
+| $C$ | Channel dimension |
+| $K_L, K_M, K_H$ | Basis pairs per band (low, mid, high); $K_L + K_M + K_H = K$ |
+
+### Fourier Basis
+
+$$\phi_k(v) = \left[\cos\!\left(\frac{2\pi k v}{V}\right),\; \sin\!\left(\frac{2\pi k v}{V}\right)\right], \quad k = 1, \dots, K$$
+
+Full basis matrix $\Phi \in \mathbb{R}^{V \times 2K}$.
+
+**Key property:** Low-$k$ basis functions vary smoothly across vocabulary indices (broad semantic groupings). High-$k$ basis functions oscillate rapidly (fine lexical distinctions). This is the structural prior — frequency in vocabulary space maps to representational scale.
+
+### Frequency Band Partition
+
+$$\Phi_L = \Phi_{:,\;1:2K_L}, \quad \Phi_M = \Phi_{:,\;2K_L+1:2(K_L+K_M)}, \quad \Phi_H = \Phi_{:,\;2(K_L+K_M)+1:2K}$$
+
+Default partition with $K = 16$: $K_L = 4$, $K_M = 4$, $K_H = 8$.
+
+Low band sees only smooth patterns. High band sees only sharp patterns. Neither can access the other's frequency range. Cross-frequency coupling is the *only* pathway between scales.
+
+### Band Projection (Analysis)
+
+For band $b \in \{L, M, H\}$ with sub-basis $\Phi_b \in \mathbb{R}^{V \times 2K_b}$ and learned coefficients $\alpha_b \in \mathbb{R}^{C \times 2K_b}$:
+
+$$R_b = \text{softmax}\!\left(\Phi_b \, \alpha_b^\top,\; \text{dim}=0\right) \in \mathbb{R}^{V \times C}$$
+$$z_b = x \, R_b \in \mathbb{R}^{B \times T \times C}$$
+
+This decomposes the register state into a band-specific channel representation. The softmax ensures each channel reads a normalized mixture over vocabulary items, weighted by that band's frequency components.
+
+### Band Transform (Within-Position)
+
+$$h_b = \sigma\!\left(z_b \, A_b + d_b\right)$$
+
+where $A_b \in \mathbb{R}^{C \times C}$ is a channel mixing matrix, $d_b \in \mathbb{R}^C$ is a bias, and $\sigma$ is an activation function (GELU). This is the "computation" within each frequency band — how it processes what it reads from the registers.
+
+### Cross-Frequency Coupling (Alpha Gate)
+
+The low band's channel representation gates the high band's output:
+
+$$g_\alpha = \sigma_{\text{sigmoid}}\!\left(h_L \, W_\alpha + b_\alpha\right) \in \mathbb{R}^{B \times T \times C}$$
+$$h_H \leftarrow g_\alpha \odot h_H$$
+
+where $W_\alpha \in \mathbb{R}^{C \times C}$, $b_\alpha \in \mathbb{R}^C$.
+
+This is alpha suppression: the broad context (low band) decides which fine-detail channels (high band) are relevant. Irrelevant high-frequency content is zeroed out before it can influence the register state.
+
+### Synthesis (Write-Back)
+
+For each band with write coefficients $\beta_b \in \mathbb{R}^{C \times 2K_b}$:
+
+$$W_b = \Phi_b \, \beta_b^\top \in \mathbb{R}^{V \times C}$$
+$$\Delta x_{\text{band}} = \gamma_L \cdot h_L \, W_L^\top + \gamma_M \cdot h_M \, W_M^\top + \gamma_H \cdot h_H \, W_H^\top$$
+
+where $\gamma_L, \gamma_M, \gamma_H$ are learned scale parameters. The register state is updated:
+
+$$x \leftarrow x + \Delta x_{\text{band}}$$
+
+### Cross-Position Temporal Mixing
+
+Two associative memories operating at different temporal scales, coupled:
+
+**Slow memory (theta analog):** Long-range context.
+
+$$Q_L, K_L, V_L = x \, R_L^Q, \; x \, R_L^K, \; x \, R_L^V$$
+
+where $R_L^Q, R_L^K, R_L^V$ are softmax-normalized projections through $\Phi_L$.
+
+$$S_L[t, s] = (Q_L[t] \cdot K_L[s]) \cdot \lambda_L^{t - s - 1} \cdot \mathbb{1}[s < t]$$
+$$r_L = S_L \, V_L \in \mathbb{R}^{B \times T \times C}$$
+
+with $\lambda_L = \sigma_{\text{sigmoid}}(\ell_L)$, $\ell_L$ initialized high $\Rightarrow$ slow decay $\Rightarrow$ long-range memory.
+
+**Fast memory (gamma analog):** Local detail.
+
+Same structure through $\Phi_H$, but with $\lambda_H$ initialized low $\Rightarrow$ fast decay $\Rightarrow$ short-range.
+
+**Theta-gamma temporal coupling:**
+
+$$g_\theta = \sigma_{\text{sigmoid}}\!\left(r_L \, W_\theta + b_\theta\right)$$
+$$r_H \leftarrow g_\theta \odot r_H$$
+
+The slow memory's retrieval gates what the fast memory is allowed to contribute. Broad sequential context controls when fine-grained binding acts.
+
+**Temporal update:**
+
+$$\Delta x_{\text{temporal}} = s_L \cdot r_L \, O_L^\top + s_H \cdot r_H \, O_H^\top$$
+
+where $O_L, O_H$ are output projections back to vocabulary space.
+
+### Full Oscillatory Cycle
+
+One cycle combines temporal mixing and band processing:
+
+$$\tilde{x} = \text{RMSNorm}(x)$$
+$$\Delta x_{\text{temporal}} = \text{TemporalMixing}(\tilde{x}, \Phi_L, \Phi_H)$$
+$$x \leftarrow x + \Delta x_{\text{temporal}}$$
+$$\tilde{x} = \text{RMSNorm}(x)$$
+$$\Delta x_{\text{band}} = \text{BandProcessing}(\tilde{x}, \Phi_L, \Phi_M, \Phi_H) \quad \text{with coupling}$$
+$$x \leftarrow x + \Delta x_{\text{band}}$$
+
+### Output
+
+After $N$ cycles:
+
+$$\text{logits} = \text{RMSNorm}(x) \cdot s_{\text{logit}}$$
+$$\text{logits} = C_{\text{cap}} \cdot \tanh\!\left(\text{logits} / C_{\text{cap}}\right)$$
+$$\mathcal{L} = \text{CrossEntropy}(\text{logits}, \text{targets})$$
+
+### Parameter Count Per Cycle
+
+| Component | Parameters |
+|-----------|-----------|
+| Slow memory ($\Phi_L$, 4 projections) | $4 \times C \times 2K_L + 2$ |
+| Fast memory ($\Phi_H$, 4 projections) | $4 \times C \times 2K_H + 2$ |
+| Low band register op | $2 \times C \times 2K_L + C^2 + C + 1$ |
+| Mid band register op | $2 \times C \times 2K_M + C^2 + C + 1$ |
+| High band register op | $2 \times C \times 2K_H + C^2 + C + 1$ |
+| Alpha coupling ($W_\alpha, b_\alpha$) | $C^2 + C$ |
+| Theta-gamma coupling ($W_\theta, b_\theta$) | $C^2 + C$ |
+| Scales | $5$ |
+
+With $C = 128$, $K_L = 4$, $K_M = 4$, $K_H = 8$: **~103K per cycle**. With 8 cycles: **~824K total**.
+
+For comparison, v3 with 8 steps: ~330K. The wave architecture uses ~2.5x more parameters for richer dynamics. To match parameter count, use 4 cycles or reduce $C$.
+
+---
+
 ## Concrete v4 Implementation Plan
 
 ### Phase 1: Minimal Coupling (Test the Hypothesis)
