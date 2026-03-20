@@ -120,43 +120,46 @@ class MultiHeadAssociativeMemory(nn.Module):
         self.out_scale = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, x: Tensor, basis: Tensor,
-                shared_q_w: Tensor, shared_k_w: Tensor) -> Tensor:
+                shared_q_w: Tensor, shared_k_w: Tensor,
+                decay_override: Tensor | None = None) -> Tensor:
         B, T, V = x.shape
         H, D = self.n_heads, self.head_dim
         dtype = x.dtype
 
-        v_w = self.value_proj(basis).to(dtype)   # (V, C)
-        o_w = self.output_proj(basis).to(dtype)   # (V, C)
+        v_w = self.value_proj(basis).to(dtype)
+        o_w = self.output_proj(basis).to(dtype)
 
-        # Project and normalize Q/K (cosine similarity)
-        queries = F.normalize(x @ shared_q_w, dim=-1)  # (B, T, C)
-        keys = F.normalize(x @ shared_k_w, dim=-1)     # (B, T, C)
-        values = x @ v_w                                # (B, T, C)
+        # Shared Q/K with L2 normalization (cosine similarity)
+        queries = F.normalize(x @ shared_q_w, dim=-1)
+        keys = F.normalize(x @ shared_k_w, dim=-1)
+        values = x @ v_w
 
         # Reshape to multi-head: (B, H, T, D)
         queries = queries.view(B, T, H, D).permute(0, 2, 1, 3)
         keys = keys.view(B, T, H, D).permute(0, 2, 1, 3)
         values = values.view(B, T, H, D).permute(0, 2, 1, 3)
 
-        # Per-head scores: (B, H, T, T)
-        scores = torch.matmul(queries, keys.transpose(-1, -2))
+        # Per-head scores
+        scores = torch.matmul(queries, keys.transpose(-1, -2))  # (B, H, T, T)
 
-        # Causal decay mask with per-head decay rates
-        decay = torch.sigmoid(self.decay_logits)  # (H,)
+        # Causal decay with per-head rates (+ optional per-invocation override)
+        effective_logits = self.decay_logits
+        if decay_override is not None:
+            effective_logits = effective_logits + decay_override
+        decay = torch.sigmoid(effective_logits)  # (H,)
+
         pos = torch.arange(T, device=x.device)
         diff = pos.unsqueeze(0) - pos.unsqueeze(1)  # (T, T)
         causal_mask = (diff > 0)
-
-        # decay_weights: (H, T, T)
+        # (H, T, T)
         decay_weights = (
             decay.view(H, 1, 1) ** (diff.float() - 1).clamp(min=0).unsqueeze(0)
         ) * causal_mask.unsqueeze(0)
 
-        scores = scores * decay_weights.to(dtype).unsqueeze(0)  # (B, H, T, T)
+        scores = scores * decay_weights.to(dtype).unsqueeze(0)
 
-        # Retrieve and reshape back
         retrieved = torch.matmul(scores, values)  # (B, H, T, D)
-        retrieved = retrieved.permute(0, 2, 1, 3).reshape(B, T, -1)  # (B, T, C)
+        retrieved = retrieved.permute(0, 2, 1, 3).reshape(B, T, -1)
 
         return retrieved @ o_w.T * self.out_scale.to(dtype)
 
@@ -245,10 +248,11 @@ class RegisterStep(nn.Module):
         self.op_scale = nn.Parameter(torch.ones(1))
 
     def forward(self, x: Tensor, basis: Tensor,
-                shared_q_w: Tensor, shared_k_w: Tensor) -> Tensor:
+                shared_q_w: Tensor, shared_k_w: Tensor,
+                decay_override: Tensor | None = None) -> Tensor:
         D = x.size(-1)
         x = x + self.mem_scale.to(x.dtype) * self.memory(
-            F.rms_norm(x, (D,)), basis, shared_q_w, shared_k_w)
+            F.rms_norm(x, (D,)), basis, shared_q_w, shared_k_w, decay_override)
         x = x + self.op_scale.to(x.dtype) * self.register_op(
             F.rms_norm(x, (D,)), basis)
         return x
@@ -320,22 +324,16 @@ class RegisterGPTv4(nn.Module):
 
         # Run steps with reuse and per-invocation overrides
         inv_idx = 0
-        for step_idx, step in enumerate(self.steps):
-            for inv in range(self.invocations_per_step):
-                # Apply per-invocation decay override additively
-                orig_decay = step.memory.decay_logits.data
-                step.memory.decay_logits.data = (
-                    orig_decay + self.inv_decay_overrides[inv_idx].data
-                )
-
-                # Scale the step's residual contributions
+        for step in self.steps:
+            for _ in range(self.invocations_per_step):
                 mem_override = self.inv_mem_scale_override[inv_idx].to(dtype)
                 op_override = self.inv_op_scale_override[inv_idx].to(dtype)
                 out_override = self.inv_out_scale_override[inv_idx].to(dtype)
 
                 D = x.size(-1)
                 mem_out = step.memory(
-                    F.rms_norm(x, (D,)), basis, shared_q_w, shared_k_w
+                    F.rms_norm(x, (D,)), basis, shared_q_w, shared_k_w,
+                    decay_override=self.inv_decay_overrides[inv_idx]
                 )
                 x = x + mem_override * step.mem_scale.to(dtype) * mem_out
 
@@ -343,10 +341,6 @@ class RegisterGPTv4(nn.Module):
                 x = x + op_override * step.op_scale.to(dtype) * op_out
 
                 x = x * out_override
-
-                # Restore original decay
-                step.memory.decay_logits.data = orig_decay
-
                 inv_idx += 1
 
         x = F.rms_norm(x, (V,))

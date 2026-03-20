@@ -73,6 +73,12 @@ class Hyperparameters:
     fast_decay_init = float(os.environ.get("FAST_DECAY_INIT", 2.0))
     band_split = os.environ.get("BAND_SPLIT", "4,4,8")
 
+    # lgp-specific
+    n_ops = int(os.environ.get("N_OPS", 8))
+
+    # graph-specific
+    interaction_rank = int(os.environ.get("INTERACTION_RANK", 64))
+
     # Optimizer
     lr = float(os.environ.get("LR", 0.03))
     beta1 = float(os.environ.get("BETA1", 0.9))
@@ -91,6 +97,10 @@ CONTROL_TENSOR_NAME_PATTERNS = (
     "diag", "mix_down", "mix_up", "decay_logits", "_override",
     # gauss additions
     "freq_to_ch", "ch_to_freq", "weight",
+    # lgp additions
+    "op_logits", "op_weights", "op_biases",
+    # graph additions
+    "q_scale", "k_scale", "diag", "prop_scale", "interact_scale",
 )
 
 # -----------------------------
@@ -624,7 +634,7 @@ def main():
     bbl, hsl, ibl = build_sentencepiece_luts(sp, args.vocab_size, device)
 
     if args.model_version == "wave":
-        from wave_model import BrainWaveGPT
+        from v6_brain_wave.model import BrainWaveGPT
         band_split = tuple(int(x) for x in args.band_split.split(","))
         base_model = BrainWaveGPT(
             vocab_size=args.vocab_size,
@@ -651,12 +661,33 @@ def main():
             decay_init=args.decay_init,
         ).to(device).bfloat16()
     elif args.model_version == "gauss":
-        n_freq = args.n_fourier_basis  # reuse basis count as freq count
+        n_freq = args.n_fourier_basis
         base_model = GaussRegisterGPT(
             vocab_size=args.vocab_size,
             num_steps=args.num_steps,
             n_freq=n_freq,
             n_channels=args.n_channels,
+            logit_softcap=args.logit_softcap,
+            activation=args.activation,
+            decay_init=args.decay_init,
+        ).to(device).bfloat16()
+    elif args.model_version == "lgp":
+        from v7_lgp.model import LGPGPT
+        base_model = LGPGPT(
+            vocab_size=args.vocab_size,
+            num_instructions=args.num_steps,
+            n_fourier_basis=args.n_fourier_basis,
+            n_channels=args.n_channels,
+            n_ops=args.n_ops,
+            logit_softcap=args.logit_softcap,
+            decay_init=args.decay_init,
+        ).to(device).bfloat16()
+    elif args.model_version == "graph":
+        from v8_word_graph.model import WordGraphGPT
+        base_model = WordGraphGPT(
+            vocab_size=args.vocab_size,
+            num_hops=args.num_steps,
+            interaction_rank=args.interaction_rank,
             logit_softcap=args.logit_softcap,
             activation=args.activation,
             decay_init=args.decay_init,

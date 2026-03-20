@@ -1,5 +1,5 @@
 """
-BrainWaveGPT v4 — Oscillatory dynamics as computation.
+BrainWaveGPT v6 — Oscillatory dynamics as computation.
 
 Not a transformer. No softmax attention. No embedding. No output projection.
 Cross-frequency coupling between oscillatory bands replaces uniform layer processing.
@@ -22,7 +22,7 @@ Mathematical basis:
   Fourier basis Φ ∈ R^{V×2K} partitioned into bands Φ_L, Φ_M, Φ_H.
   Each band projects vocab-space → channel-space via learned coefficients.
   Cross-frequency coupling: g = σ(h_L @ W + b), h_H ← g ⊙ h_H.
-  See docs/brain_wave_gpt.md for full derivation.
+  See v6_brain_wave/DESIGN.md for full derivation.
 """
 
 import math

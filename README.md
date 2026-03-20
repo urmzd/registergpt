@@ -31,7 +31,9 @@ No embedding matrix. No output projection. Every intermediate state is readable 
 | [v3](v3_assoc_memory/) | Associative memory | Fourier ops | 328K–1.7M | — | In progress |
 | [v4](v4_param_optimized/) | Assoc memory (shared Q/K) | Factored ops | ~101K | — | In progress |
 | [v5](v5_gauss_fft/) | FFT-based assoc memory | FFT register ops | 919K | — | Tested (flat loss) |
-| [v6](v6_brain_wave/) | Oscillatory coupling | Wave interference | — | — | Design only |
+| [v6](v6_brain_wave/) | Oscillatory coupling | Band-specific memory + alpha/theta-gamma gates | — | — | Ready |
+| [v7](v7_lgp/) | Causal decay memory | Learned program (op bank + soft addressing) | — | — | Ready |
+| [v8](v8_word_graph/) | Causal word propagation | Direct V×V word interaction graph | — | — | Ready |
 
 ## Quick Start
 
@@ -63,7 +65,9 @@ v2_causal_conv/                # Depthwise conv (abandoned)
 v3_assoc_memory/               # Associative memory
 v4_param_optimized/            # Param-optimized design
 v5_gauss_fft/                  # FFT-based design
-v6_brain_wave/                 # Oscillatory dynamics design
+v6_brain_wave/                 # Oscillatory dynamics
+v7_lgp/                        # True LGP (differentiable register machine)
+v8_word_graph/                 # Direct word-to-word interaction graph
 docs/                          # Research notes and design docs
 ```
 
