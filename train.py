@@ -580,7 +580,7 @@ class GaussRegisterGPT(nn.Module):
 # V4 MODEL (param-optimized, see model_v4.py for documented implementation)
 # -----------------------------
 
-from model_v4 import RegisterGPTv4
+from v4_param_optimized.model import RegisterGPTv4
 
 
 # -----------------------------

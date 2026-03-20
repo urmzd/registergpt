@@ -84,7 +84,7 @@ All hyperparameters configurable via env vars. See [AGENTS.md](AGENTS.md).
 ## Project Structure
 
 ```
-train.py                       # Unified training script (all models)
+train.py                       # Unified training script (all models inline + imports)
 data/download_data.py          # Data download (FineWeb sp1024)
 bootstrap.sh                   # One-command RunPod setup
 v0_register_lm/               # Prototype (learned embeddings)
