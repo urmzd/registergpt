@@ -696,6 +696,16 @@ def main():
             activation=args.activation,
             decay_init=args.decay_init,
         ).to(device).bfloat16()
+    elif args.model_version == "policy":
+        from v10_policy.model import PolicyGPT
+        base_model = PolicyGPT(
+            vocab_size=args.vocab_size,
+            num_steps=args.num_steps,
+            state_dim=args.state_dim,
+            n_ops=args.n_ops,
+            logit_softcap=args.logit_softcap,
+            decay_init=args.decay_init,
+        ).to(device).bfloat16()
     elif args.model_version == "meta":
         from v9_meta_state.model import MetaStateGPT
         base_model = MetaStateGPT(
