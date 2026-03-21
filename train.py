@@ -715,15 +715,16 @@ def main():
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    log0(f"[init] loading tokenizer from {args.tokenizer_path}")
+    print(f"[rank {rank}] loading tokenizer", flush=True)
     sp = spm.SentencePieceProcessor(model_file=args.tokenizer_path)
     if int(sp.vocab_size()) != args.vocab_size:
         raise ValueError(f"VOCAB_SIZE mismatch")
-    log0(f"[init] loading validation data from {args.val_files}")
+    print(f"[rank {rank}] loading validation data", flush=True)
     val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
+    print(f"[rank {rank}] building sentencepiece luts", flush=True)
     bbl, hsl, ibl = build_sentencepiece_luts(sp, args.vocab_size, device)
-    log0(f"[init] data loaded: {val_tokens.numel()} val tokens")
-    log0(f"[init] building model: {args.model_version}")
+    print(f"[rank {rank}] data loaded: {val_tokens.numel()} val tokens", flush=True)
+    print(f"[rank {rank}] building model: {args.model_version}", flush=True)
 
     if args.model_version == "v1":
         from v1_shared_attention.model import RegisterGPT as RegisterGPTv1
