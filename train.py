@@ -887,6 +887,10 @@ def main():
 
     use_compile = bool(int(os.environ.get("TORCH_COMPILE", "0")))
     compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True) if use_compile else base_model
+    if distributed:
+        print(f"[rank {rank}] reached DDP barrier", flush=True)
+        dist.barrier()
+        print(f"[rank {rank}] passed DDP barrier, calling DDP()", flush=True)
     log0(f"[init] wrapping with DDP (distributed={distributed})")
     model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
     log0(f"[init] DDP ready")
