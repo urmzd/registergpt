@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Bootstrap agi-models on RunPod from scratch
-# Usage: curl -sSL https://raw.githubusercontent.com/urmzd/agi-models/main/bootstrap.sh | bash
+# Bootstrap exp-agi-models on RunPod from scratch
+# Usage: curl -sSL https://raw.githubusercontent.com/urmzd/exp-agi-models/main/bootstrap.sh | bash
 set -euo pipefail
 
 cd /workspace
 
 # Clone repo
-[ -d agi-models ] || git clone https://github.com/urmzd/agi-models.git
-cd agi-models
+[ -d exp-agi-models ] || git clone https://github.com/urmzd/exp-agi-models.git
+cd exp-agi-models
 
 # Install uv
 if ! command -v uv &>/dev/null; then
@@ -26,7 +26,7 @@ python data/download_data.py --variant sp1024
 
 echo ""
 echo "=== Ready ==="
-echo "cd /workspace/agi-models"
+echo "cd /workspace/exp-agi-models"
 echo ""
 echo "# Run v4 (101K params, associative memory):"
 echo "MODEL_VERSION=v4 TRAIN_BATCH_TOKENS=491520 GRAD_ACCUM_STEPS=16 \\"

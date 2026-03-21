@@ -39,13 +39,13 @@ SSH config alias: `runpod` (configured in `~/.ssh/config`, key: `~/.ssh/runpod`)
 Setup on a fresh pod:
 ```bash
 cd /workspace && \
-git clone https://github.com/urmzd/agi-models.git && \
-cd agi-models && bash setup.sh
+git clone https://github.com/urmzd/exp-agi-models.git && \
+cd exp-agi-models && bash setup.sh
 ```
 
 Run training:
 ```bash
-cd /workspace/agi-models && \
+cd /workspace/exp-agi-models && \
 TRAIN_BATCH_TOKENS=491520 \
 GRAD_ACCUM_STEPS=16 \
 TRAIN_LOG_EVERY=10 \
@@ -75,7 +75,7 @@ train.py
 | `DECAY_INIT` | 3.0 | Memory decay logit |
 | `GRAD_ACCUM_STEPS` | 16 | Gradient accumulation |
 | `TRAIN_BATCH_TOKENS` | 524288 | Global batch size in tokens |
-| `MAX_WALLCLOCK_SECONDS` | 600 | Wall-clock time limit |
+| `MAX_WALLCLOCK_SECONDS` | None | Wall-clock time limit (must be set manually, no default) |
 | `ITERATIONS` | 500 | Max training iterations |
 | `TORCH_COMPILE` | 0 | Enable torch.compile |
 
