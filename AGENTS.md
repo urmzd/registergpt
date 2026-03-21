@@ -59,7 +59,7 @@ train.py
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `MODEL_VERSION` | v3 | Which model to train (see README for full list) |
+| `MODEL_VERSION` | v3_assoc | Which model to train (see README for full list) |
 | `NUM_STEPS` | 8 | Recurrent steps / depth |
 | `STATE_DIM` | 64 | State space dimension (v9+) |
 | `INNER_DIM` | 128 | Inner MLP dimension (v9+) |
@@ -100,16 +100,20 @@ train.py
 
 | `MODEL_VERSION` | Directory | Description |
 |-----------------|-----------|-------------|
-| `v1` | `v1_shared_attention/` | Shared attention + Fourier ops |
-| `v2` | `v2_causal_conv/` | Depthwise conv + Fourier ops |
-| `v3` | `v3_assoc_memory/` | Associative memory + Fourier ops |
-| `v4` | `v4_param_optimized/` | 101K param golf |
-| `gauss` | `v5_gauss_fft/` | FFT-based ops |
-| `wave` | `v6_brain_wave/` | Oscillatory dynamics |
-| `lgp` | `v7_lgp/` | Differentiable register machine |
-| `graph` | `v8_word_graph/` | Word interaction graph |
-| `meta` | `v9_meta_state/` | Evolving Q-table (recommended) |
-| `policy` | `v10_policy/` | State-dependent policy |
-| `brainwave` | `v11_brainwave/` | Oscillatory primitives |
-| `tpg` | `v11_tpg/` | Neural TPG (hard routing + multi-timescale + adaptive depth) |
-| `sparse` | `v12_sparse_register/` | Sparse register addressing |
+| `v1_attention` | `v1_shared_attention/` | Shared attention + Fourier ops |
+| `v2_conv` | `v2_causal_conv/` | Depthwise conv + Fourier ops |
+| `v3_assoc` | `v3_assoc_memory/` | Associative memory + Fourier ops |
+| `v4_golf` | `v4_param_optimized/` | 101K param golf |
+| `v5_gauss` | `v5_gauss_fft/` | FFT-based ops |
+| `v6_wave` | `v6_brain_wave/` | Oscillatory dynamics |
+| `v7_lgp` | `v7_lgp/` | Differentiable register machine |
+| `v8_graph` | `v8_word_graph/` | Word interaction graph (best at rank 8) |
+| `v9_meta` | `v9_meta_state/` | Evolving Q-table |
+| `v10_policy` | `v10_policy/` | State-dependent policy |
+| `v11_brainwave` | `v11_brainwave/` | Oscillatory primitives |
+| `v11_tpg` | `v11_tpg/` | Neural TPG |
+| `v12_sparse` | `v12_sparse_register/` | Sparse register addressing |
+| `v13_embed` | `v13_sparse_embed/` | Sparse + factored embedding |
+| `v14_adaptive` | `v14_adaptive/` | Data-dependent decay (Mamba-inspired) |
+| `v15_predictive` | `v15_predictive/` | Per-step aux losses (predictive coding) |
+| `v16_columnar` | `v16_columnar/` | Multi-column voting (Thousand Brains) |

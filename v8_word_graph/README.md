@@ -1,24 +1,31 @@
-# v8: Word Interaction Graph — Direct Word-to-Word Associations
+# v8: Word Interaction Graph
 
-**Status**: Implemented, ready for training.
+**Status**: Best architecture so far (at rank 8).
 
 ## Architecture
-- Learned V×V word interaction matrix (low-rank: W = U@V^T + diag)
-- Multiple hops through the graph build compositional representations
+- Low-rank V x V word interaction matrix: `W = U @ V^T + diag`
+- Multiple hops build compositional word associations
 - Cross-position via causal decay-weighted word activation similarity
-- No Fourier basis, no channel bottleneck — direct word space operations
+- No Fourier basis, no channel bottleneck
 
-## Key Innovation
-Fully interpretable: W["the"]["cat"] = 0.3 means "the" activates "cat" with weight 0.3.
-The graph IS the model's knowledge of language structure.
+## Results (3x A40, 10 min)
+
+| Rank | Params | Steps | val_loss | val_bpb | Behavior |
+|------|--------|-------|----------|---------|----------|
+| 8 | 164K | 100 | **5.24** | **3.10** | Generalizing (train ≈ val), still descending |
+| 64 | 1.1M | 188 | ~6.5+ | — | Memorizing (train 0.04, val high) |
+
+## Why rank matters
+
+At rank 64, `U @ V^T` has enough capacity to memorize word-pair statistics from the training batch. At rank 8, the model is forced to learn compressed, generalizable structure instead. The constraint creates generalization.
+
+## Honest assessment
+
+`x @ U @ V^T` is mathematically just a rank-r linear layer. The "word graph" framing sounds novel but the computation is standard. What's genuinely useful is that direct bilinear word-to-word interaction is a good inductive bias for language — better than convolutions or Fourier ops at this scale.
+
+The cross-position mechanism is O(T^2 x V) — full attention cost in vocab space. This won't scale to long sequences.
 
 ## Usage
 ```bash
-MODEL_VERSION=graph torchrun --standalone --nproc_per_node=1 train.py
+INTERACTION_RANK=8 MODEL_VERSION=v8_graph torchrun --standalone --nproc_per_node=3 train.py
 ```
-
-## Env Vars
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `NUM_STEPS` | 8 | Number of hops through graph |
-| `INTERACTION_RANK` | 64 | Rank of word interaction matrix |
