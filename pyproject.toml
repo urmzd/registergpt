@@ -21,6 +21,9 @@ mlx = [
     "mlx>=0.16",
 ]
 
+[tool.setuptools.packages.find]
+include = ["data"]
+
 [tool.uv]
 default-groups = []
 package = true
