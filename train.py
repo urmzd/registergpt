@@ -19,12 +19,15 @@ import uuid
 import zlib
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import sentencepiece as spm
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from pydantic import Field, computed_field
+from pydantic_settings import BaseSettings
 from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 
@@ -32,84 +35,140 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 # HYPERPARAMETERS
 # -----------------------------
 
+
+class DataConfig(BaseSettings):
+    data_path: str = "./data/datasets/fineweb10B_sp1024"
+    tokenizer_path: str = "./data/tokenizers/fineweb_1024_bpe.model"
+
+    @computed_field
+    @property
+    def train_files(self) -> str:
+        return os.path.join(self.data_path, "fineweb_train_*.bin")
+
+    @computed_field
+    @property
+    def val_files(self) -> str:
+        return os.path.join(self.data_path, "fineweb_val_*.bin")
+
+
+class RunConfig(BaseSettings):
+    run_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    resume_from: str = Field("", validation_alias="RESUME")
+    checkpoint_every: int = 500
+    seed: int = 1337
+
+
+class ScheduleConfig(BaseSettings):
+    val_batch_size: int = 524_288
+    val_loss_every: int = 1000
+    train_log_every: int = 200
+    iterations: int = 500
+    warmdown_iters: int = 1200
+    warmup_steps: int = 20
+    train_batch_tokens: int = 524_288
+    train_seq_len: int = 1024
+    max_wallclock_seconds: Optional[float] = None
+
+
+class ModelCommonConfig(BaseSettings):
+    model_version: str = "v3"
+    vocab_size: int = 1024
+    num_steps: int = 8
+    n_fourier_basis: int = 16
+    n_channels: int = 128
+    activation: str = "gelu"
+    logit_softcap: float = 30.0
+    decay_init: float = 3.0
+
+
+class V1Config(BaseSettings):
+    num_heads: int = 8
+    num_kv_heads: int = 4
+    rope_base: float = 10000.0
+    qk_gain_init: float = 1.5
+
+
+class V2Config(BaseSettings):
+    kernel_size: int = 16
+
+
+class V4Config(BaseSettings):
+    n_heads: int = 4
+    transform_rank: int = 8
+    unique_steps: int = 5
+    invocations_per_step: int = 2
+
+
+class WaveConfig(BaseSettings):
+    slow_decay_init: float = 4.0
+    fast_decay_init: float = 2.0
+    band_split: str = "4,4,8"
+
+
+class LgpConfig(BaseSettings):
+    n_ops: int = 8
+
+
+class GraphConfig(BaseSettings):
+    interaction_rank: int = 64
+
+
+class MetaStateConfig(BaseSettings):
+    state_dim: int = 64
+    inner_dim: int = 128
+
+
+class TpgConfig(BaseSettings):
+    gumbel_tau: float = 1.0
+    halt_threshold: float = 0.5
+    ponder_lambda: float = 0.01
+
+
+class SparseRegisterConfig(BaseSettings):
+    k_active: int = 256
+    inner_mul: int = 2
+    parallel_waves: bool = True
+    grad_checkpoint: bool = False
+
+
+class OptimizerConfig(BaseSettings):
+    lr: float = 0.03
+    beta1: float = 0.9
+    beta2: float = 0.999
+    adam_eps: float = 1e-8
+    weight_decay: float = 0.0
+    grad_clip_norm: float = 1.0
+
+
 class Hyperparameters:
-    data_path = os.environ.get("DATA_PATH", "./data/datasets/fineweb10B_sp1024")
-    train_files = os.path.join(data_path, "fineweb_train_*.bin")
-    val_files = os.path.join(data_path, "fineweb_val_*.bin")
-    tokenizer_path = os.environ.get("TOKENIZER_PATH", "./data/tokenizers/fineweb_1024_bpe.model")
-    run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
-    resume_from = os.environ.get("RESUME", "")  # path to checkpoint .pt file
-    checkpoint_every = int(os.environ.get("CHECKPOINT_EVERY", 500))
-    seed = int(os.environ.get("SEED", 1337))
+    def __init__(self) -> None:
+        self.data = DataConfig()
+        self.run = RunConfig()
+        self.schedule = ScheduleConfig()
+        self.model_common = ModelCommonConfig()
+        self.v1 = V1Config()
+        self.v2 = V2Config()
+        self.v4 = V4Config()
+        self.wave = WaveConfig()
+        self.lgp = LgpConfig()
+        self.graph = GraphConfig()
+        self.meta = MetaStateConfig()
+        self.tpg = TpgConfig()
+        self.sparse = SparseRegisterConfig()
+        self.optimizer = OptimizerConfig()
+        self._groups = [
+            self.data, self.run, self.schedule, self.model_common,
+            self.v1, self.v2, self.v4, self.wave, self.lgp,
+            self.graph, self.meta, self.tpg, self.sparse, self.optimizer,
+        ]
 
-    val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
-    val_loss_every = int(os.environ.get("VAL_LOSS_EVERY", 1000))
-    train_log_every = int(os.environ.get("TRAIN_LOG_EVERY", 200))
-    iterations = int(os.environ.get("ITERATIONS", 500))
-    warmdown_iters = int(os.environ.get("WARMDOWN_ITERS", 1200))
-    warmup_steps = int(os.environ.get("WARMUP_STEPS", 20))
-    train_batch_tokens = int(os.environ.get("TRAIN_BATCH_TOKENS", 524_288))
-    train_seq_len = int(os.environ.get("TRAIN_SEQ_LEN", 1024))
-    max_wallclock_seconds = float(os.environ["MAX_WALLCLOCK_SECONDS"]) if "MAX_WALLCLOCK_SECONDS" in os.environ else None
-
-    # Model
-    model_version = os.environ.get("MODEL_VERSION", "v3")
-    vocab_size = int(os.environ.get("VOCAB_SIZE", 1024))
-    num_steps = int(os.environ.get("NUM_STEPS", 8))
-    n_fourier_basis = int(os.environ.get("N_FOURIER_BASIS", 16))
-    n_channels = int(os.environ.get("N_CHANNELS", 128))
-    activation = os.environ.get("ACTIVATION", "gelu")
-    logit_softcap = float(os.environ.get("LOGIT_SOFTCAP", 30.0))
-    decay_init = float(os.environ.get("DECAY_INIT", 3.0))
-
-    # v1-specific
-    num_heads = int(os.environ.get("NUM_HEADS", 8))
-    num_kv_heads = int(os.environ.get("NUM_KV_HEADS", 4))
-    rope_base = float(os.environ.get("ROPE_BASE", 10000.0))
-    qk_gain_init = float(os.environ.get("QK_GAIN_INIT", 1.5))
-
-    # v2-specific
-    kernel_size = int(os.environ.get("KERNEL_SIZE", 16))
-
-    # v4-specific
-    n_heads = int(os.environ.get("N_HEADS", 4))
-    transform_rank = int(os.environ.get("TRANSFORM_RANK", 8))
-    unique_steps = int(os.environ.get("UNIQUE_STEPS", 5))
-    invocations_per_step = int(os.environ.get("INVOCATIONS_PER_STEP", 2))
-
-    # wave-specific
-    slow_decay_init = float(os.environ.get("SLOW_DECAY_INIT", 4.0))
-    fast_decay_init = float(os.environ.get("FAST_DECAY_INIT", 2.0))
-    band_split = os.environ.get("BAND_SPLIT", "4,4,8")
-
-    # lgp-specific
-    n_ops = int(os.environ.get("N_OPS", 8))
-
-    # graph-specific
-    interaction_rank = int(os.environ.get("INTERACTION_RANK", 64))
-
-    # meta-state-specific
-    state_dim = int(os.environ.get("STATE_DIM", 64))
-    inner_dim = int(os.environ.get("INNER_DIM", 128))
-
-    # tpg-specific (v11)
-    gumbel_tau = float(os.environ.get("GUMBEL_TAU", 1.0))
-    halt_threshold = float(os.environ.get("HALT_THRESHOLD", 0.5))
-    ponder_lambda = float(os.environ.get("PONDER_LAMBDA", 0.01))
-
-    # sparse-register-specific (v12)
-    k_active = int(os.environ.get("K_ACTIVE", 256))
-    inner_mul = int(os.environ.get("INNER_MUL", 2))
-    parallel_waves = bool(int(os.environ.get("PARALLEL_WAVES", "1")))
-    grad_checkpoint = bool(int(os.environ.get("GRAD_CHECKPOINT", "0")))
-
-    # Optimizer
-    lr = float(os.environ.get("LR", 0.03))
-    beta1 = float(os.environ.get("BETA1", 0.9))
-    beta2 = float(os.environ.get("BETA2", 0.999))
-    adam_eps = float(os.environ.get("ADAM_EPS", 1e-8))
-    weight_decay = float(os.environ.get("WEIGHT_DECAY", 0.0))
-    grad_clip_norm = float(os.environ.get("GRAD_CLIP_NORM", 1.0))
+    def __getattr__(self, name: str):
+        for group in self._groups:
+            try:
+                return getattr(group, name)
+            except AttributeError:
+                continue
+        raise AttributeError(f"Hyperparameters has no field {name!r}")
 
 
 # Patterns for control tensors (kept in float32)
