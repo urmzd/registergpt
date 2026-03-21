@@ -16,9 +16,11 @@ from pathlib import Path
 
 
 ALL_VERSIONS = [
-    "v1", "v2", "v3", "v4", "gauss", "wave", "lgp",
-    "graph", "meta", "policy", "brainwave", "tpg", "sparse", "embed",
-    "adaptive", "predictive", "columnar",
+    "v1_attention", "v2_conv", "v3_assoc", "v4_golf",
+    "v5_gauss", "v6_wave", "v7_lgp", "v8_graph",
+    "v9_meta", "v10_policy", "v11_brainwave", "v11_tpg",
+    "v12_sparse", "v13_embed", "v14_adaptive",
+    "v15_predictive", "v16_columnar",
 ]
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 
 REGISTRY = {
-    "v1": {
+    "v1_attention": {
         "module": "v1_shared_attention.model",
         "class_name": "RegisterGPT",
         "kwargs": lambda a: dict(
@@ -14,7 +14,7 @@ REGISTRY = {
             qk_gain_init=a.qk_gain_init, activation=a.activation,
         ),
     },
-    "v2": {
+    "v2_conv": {
         "module": "v2_causal_conv.model",
         "class_name": "RegisterGPT",
         "kwargs": lambda a: dict(
@@ -24,7 +24,7 @@ REGISTRY = {
             activation=a.activation,
         ),
     },
-    "v3": {
+    "v3_assoc": {
         "module": "v3_assoc_memory.model",
         "class_name": "RegisterGPT",
         "kwargs": lambda a: dict(
@@ -34,7 +34,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "v4": {
+    "v4_golf": {
         "module": "v4_param_optimized.model",
         "class_name": "RegisterGPTv4",
         "kwargs": lambda a: dict(
@@ -46,7 +46,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "gauss": {
+    "v5_gauss": {
         "module": "v5_gauss_fft.model",
         "class_name": "GaussRegisterGPT",
         "kwargs": lambda a: dict(
@@ -56,7 +56,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "wave": {
+    "v6_wave": {
         "module": "v6_brain_wave.model",
         "class_name": "BrainWaveGPT",
         "kwargs": lambda a: dict(
@@ -67,7 +67,7 @@ REGISTRY = {
             band_split=tuple(int(x) for x in a.band_split.split(",")),
         ),
     },
-    "lgp": {
+    "v7_lgp": {
         "module": "v7_lgp.model",
         "class_name": "LGPGPT",
         "kwargs": lambda a: dict(
@@ -77,7 +77,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "graph": {
+    "v8_graph": {
         "module": "v8_word_graph.model",
         "class_name": "WordGraphGPT",
         "kwargs": lambda a: dict(
@@ -87,7 +87,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "meta": {
+    "v9_meta": {
         "module": "v9_meta_state.model",
         "class_name": "MetaStateGPT",
         "kwargs": lambda a: dict(
@@ -97,7 +97,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "policy": {
+    "v10_policy": {
         "module": "v10_policy.model",
         "class_name": "PolicyGPT",
         "kwargs": lambda a: dict(
@@ -106,7 +106,7 @@ REGISTRY = {
             logit_softcap=a.logit_softcap, decay_init=a.decay_init,
         ),
     },
-    "brainwave": {
+    "v11_brainwave": {
         "module": "v11_brainwave.model",
         "class_name": "BrainWaveGPT",
         "kwargs": lambda a: dict(
@@ -115,7 +115,7 @@ REGISTRY = {
             gate_dim=a.state_dim, logit_softcap=a.logit_softcap,
         ),
     },
-    "tpg": {
+    "v11_tpg": {
         "module": "v11_tpg.model",
         "class_name": "TPGGPT",
         "kwargs": lambda a: dict(
@@ -125,7 +125,7 @@ REGISTRY = {
             halt_threshold=a.halt_threshold, ponder_lambda=a.ponder_lambda,
         ),
     },
-    "sparse": {
+    "v12_sparse": {
         "module": "v12_sparse_register.model",
         "class_name": "SparseRegisterGPT",
         "kwargs": lambda a: dict(
@@ -136,7 +136,7 @@ REGISTRY = {
             grad_checkpoint=a.grad_checkpoint,
         ),
     },
-    "embed": {
+    "v13_embed": {
         "module": "v13_sparse_embed.model",
         "class_name": "SparseEmbedGPT",
         "kwargs": lambda a: dict(
@@ -147,7 +147,7 @@ REGISTRY = {
             parallel_waves=a.parallel_waves, grad_checkpoint=a.grad_checkpoint,
         ),
     },
-    "adaptive": {
+    "v14_adaptive": {
         "module": "v14_adaptive.model",
         "class_name": "AdaptiveGPT",
         "kwargs": lambda a: dict(
@@ -158,7 +158,7 @@ REGISTRY = {
             decay_init=a.decay_init,
         ),
     },
-    "predictive": {
+    "v15_predictive": {
         "module": "v15_predictive.model",
         "class_name": "PredictiveGPT",
         "kwargs": lambda a: dict(
@@ -170,7 +170,7 @@ REGISTRY = {
             aux_loss_decay=a.aux_loss_decay,
         ),
     },
-    "columnar": {
+    "v16_columnar": {
         "module": "v16_columnar.model",
         "class_name": "ColumnarGPT",
         "kwargs": lambda a: dict(
