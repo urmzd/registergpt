@@ -1,0 +1,465 @@
+[23:40:22] """
+RegisterGPT — PyTorch/CUDA training for all model versions.
+Compatible with torchrun for multi-GPU training.
+"""
+from __future__ import annotations
+
+import io
+import json
+import os
+import random
+import time
+import zlib
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+import sentencepiece as spm
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from core.config import Hyperparameters
+from core.data import DistributedTokenLoader, load_validation_tokens
+from core.eval import build_sentencepiece_luts, eval_val
+from core.quantize import (
+    CONTROL_TENSOR_NAME_PATTERNS,
+    dequantize_state_dict_int8,
+    quantize_state_dict_int8,
+)
+from core.registry import build_model
+
+
+def main():
+    code = Path(__file__).read_text(encoding="utf-8")
+    args = Hyperparameters()
+
+    distributed = "RANK" in os.environ and "WORLD_SIZE" in os.environ
+    rank = int(os.environ.get("RANK", "0"))
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    grad_accum_steps = args.grad_accum_steps
+    grad_scale = 1.0 / grad_accum_steps
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA required")
+    device = torch.device("cuda", local_rank)
+    torch.cuda.set_device(device)
+    master = rank == 0
+    if distributed:
+        os.environ["NCCL_P2P_DISABLE"] = args.nccl_p2p_disable
+        if master:
+            print(f"[init] NCCL_P2P_DISABLE={args.nccl_p2p_disable}, calling init_process_group")
+        dist.init_process_group(backend="nccl")
+        if master:
+            print("[init] init_process_group done, waiting on barrier")
+        dist.barrier()
+        if master:
+            print("[init] DDP barrier passed")
+
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    logfile = None
+    if master:
+        os.makedirs("logs", exist_ok=True)
+        logfile = f"logs/{args.run_id}.txt"
+        print(logfile)
+
+    def log0(msg, console=True):
+        if not master: return
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        if console: print(line)
+        if logfile:
+            with open(logfile, "a") as f: print(line, file=f)
+
+    log0(code, console=False)
+    log0(f"[config]\n{json.dumps(args.to_dict(), indent=2, default=str)}", console=False)
+    log0(f"[init] rank={rank} world_size={world_size} device={device} model_version={args.model_version}")
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
+    log0(f"[init] loading tokenizer from {args.tokenizer_path}")
+    sp = spm.SentencePieceProcessor(model_file=args.tokenizer_path)
+    if int(sp.vocab_size()) != args.vocab_size:
+        raise ValueError(f"VOCAB_SIZE mismatch: tokenizer has {sp.vocab_size()}, expected {args.vocab_size}")
+    log0(f"[init] loading validation data from {args.val_files}")
+    val_tokens = load_validation_tokens(args.val_files, args.train_seq_len)
+    bbl, hsl, ibl = build_sentencepiece_luts(sp, args.vocab_size, device)
+    log0(f"[init] data loaded: {val_tokens.numel()} val tokens")
+
+    base_model = build_model(args.model_version, args).to(device).bfloat16()
+
+    # Keep small control params in fp32
+    with torch.no_grad():
+        for name, p in base_model.named_parameters():
+            if (p.ndim < 2 or any(pat in name for pat in CONTROL_TENSOR_NAME_PATTERNS)) and p.dtype != torch.float32:
+                p.data = p.data.float()
+
+    n_params = sum(p.numel() for p in base_model.parameters())
+    log0(f"[init] model built: {n_params/1e3:.0f}K params on {device}")
+
+    compiled_model = torch.compile(base_model, dynamic=False, fullgraph=True) if args.torch_compile else base_model
+    if distributed:
+        dist.barrier()
+    log0(f"[init] wrapping with DDP (distributed={distributed})")
+    model = DDP(compiled_model, device_ids=[local_rank], broadcast_buffers=False) if distributed else compiled_model
+    log0(f"[init] DDP ready")
+
+    optimizer = torch.optim.Adam(
+        base_model.parameters(),
+        lr=args.lr,
+        betas=(args.beta1, args.beta2),
+        eps=args.adam_eps,
+        weight_decay=args.weight_decay,
+        fused=True,
+    )
+    for g in optimizer.param_groups:
+        g["base_lr"] = args.lr
+
+    n_params = sum(p.numel() for p in base_model.parameters())
+    n_trainable = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+    raw_bytes = sum(p.numel() * p.element_size() for p in base_model.parameters())
+    est_int8_bytes = sum(p.numel() for p in base_model.parameters())  # ~1 byte per param
+    log0(f"run_id:{args.run_id}")
+    log0(f"model_version:{args.model_version}")
+    log0(f"model_params:{n_params} trainable:{n_trainable} vocab=dim={args.vocab_size} raw:{raw_bytes/1e6:.1f}MB est_int8:{est_int8_bytes/1e6:.1f}MB")
+    if args.model_version == "wave":
+        log0(f"architecture:BrainWaveGPT (oscillatory dynamics, cross-frequency coupling)")
+        log0(f"cycles:{args.num_steps} channels:{args.n_channels} fourier:{args.n_fourier_basis} bands:{args.band_split}")
+        log0(f"slow_decay_init:{args.slow_decay_init} fast_decay_init:{args.fast_decay_init}")
+    elif args.model_version == "v4":
+        log0(f"unique_steps:{args.unique_steps} invocations:{args.invocations_per_step} depth:{args.unique_steps * args.invocations_per_step}")
+        log0(f"channels:{args.n_channels} heads:{args.n_heads} rank:{args.transform_rank} fourier:{args.n_fourier_basis}")
+    else:
+        log0(f"steps:{args.num_steps} channels:{args.n_channels} fourier:{args.n_fourier_basis}")
+    log0(f"activation:{args.activation} lr:{args.lr} grad_clip:{args.grad_clip_norm} decay_init:{args.decay_init}")
+    log0(f"NO attention. NO embedding. NO output projection.")
+    log0(f"world_size:{world_size} grad_accum:{grad_accum_steps} batch:{args.train_batch_tokens}")
+
+    log0(f"[init] loading training data from {args.train_files}")
+    train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
+
+    max_wc_ms = 1000.0 * args.max_wallclock_seconds if args.max_wallclock_seconds else None
+
+    def lr_mul(step, elapsed_ms):
+        if args.warmdown_iters <= 0:
+            return 1.0
+        if max_wc_ms is None:
+            ws = max(args.iterations - args.warmdown_iters, 0)
+            return max((args.iterations - step) / max(args.warmdown_iters, 1), 0.0) if ws <= step < args.iterations else 1.0
+        sms = elapsed_ms / max(step, 1)
+        wms = args.warmdown_iters * sms
+        rms = max(max_wc_ms - elapsed_ms, 0.0)
+        return rms / max(wms, 1e-9) if rms <= wms else 1.0
+
+    # Resume from checkpoint if provided
+    start_step = 0
+    if args.resume_from and Path(args.resume_from).exists():
+        ckpt = torch.load(args.resume_from, map_location=device, weights_only=False)
+        if "model" in ckpt and "step" in ckpt:
+            base_model.load_state_dict(ckpt["model"])
+            optimizer.load_state_dict(ckpt["optimizer"])
+            start_step = ckpt["step"]
+            log0(f"resumed checkpoint from {args.resume_from} at step {start_step}")
+        else:
+            base_model.load_state_dict(ckpt, strict=False)
+            log0(f"loaded weights from {args.resume_from} (no optimizer/step, restarting from 0)")
+
+    def save_checkpoint(step):
+        if not master:
+            return
+        ckpt_path = f"logs/{args.run_id}_ckpt.pt"
+        torch.save({
+            "model": base_model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "step": step,
+        }, ckpt_path)
+        log0(f"checkpoint:{ckpt_path} step:{step}")
+
+    # Warmup (skip if resuming)
+    log0(f"[init] starting warmup ({args.warmup_steps} steps)")
+    if start_step == 0:
+        for ws in range(args.warmup_steps):
+            optimizer.zero_grad(set_to_none=True)
+            for _ in range(grad_accum_steps):
+                x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    loss = model(x, y)
+                (loss * grad_scale).backward()
+            if args.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
+            optimizer.step()
+            torch.cuda.synchronize()
+            if master and (ws + 1) % 10 == 0 or ws + 1 == args.warmup_steps:
+                log0(f"warmup:{ws + 1}/{args.warmup_steps}")
+
+    train_loader = DistributedTokenLoader(args.train_files, rank, world_size, device)
+
+    # Training
+    train_ms = 0.0
+    stop_after = None
+    t0 = time.perf_counter()
+    step = start_step
+    while True:
+        last = step == args.iterations or (stop_after is not None and step >= stop_after)
+        if last or (args.val_loss_every > 0 and step % args.val_loss_every == 0):
+            train_ms += 1000.0 * (time.perf_counter() - t0)
+            vl, vbpb = eval_val(args, model, rank, world_size, device, grad_accum_steps, val_tokens, bbl, hsl, ibl)
+            log0(f"step:{step}/{args.iterations} val_loss:{vl:.4f} val_bpb:{vbpb:.4f} train_time:{train_ms:.0f}ms")
+            t0 = time.perf_counter()
+        if last:
+            if stop_after is not None and step < args.iterations:
+                log0(f"stopping_early: step:{step}/{args.iterations}")
+            break
+
+        lm = lr_mul(step, train_ms + 1000.0 * (time.perf_counter() - t0))
+        for g in optimizer.param_groups:
+            g["lr"] = g["base_lr"] * lm
+
+        step_t0 = time.perf_counter()
+        optimizer.zero_grad(set_to_none=True)
+        train_loss_accum = 0.0
+        for _ in range(grad_accum_steps):
+            x, y = train_loader.next_batch(args.train_batch_tokens, args.train_seq_len, grad_accum_steps)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                loss = model(x, y)
+            (loss * grad_scale).backward()
+            train_loss_accum += loss.item() * grad_scale
+
+        if args.grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(base_model.parameters(), args.grad_clip_norm)
+        optimizer.step()
+        torch.cuda.synchronize()
+
+        step_ms = 1000.0 * (time.perf_counter() - step_t0)
+        approx_ms = train_ms + 1000.0 * (time.perf_counter() - t0)
+        step += 1
+        if master and args.train_log_every > 0 and (step <= 10 or step % args.train_log_every == 0):
+            log0(f"step:{step}/{args.iterations} train_loss:{train_loss_accum:.4f} time:{approx_ms:.0f}ms avg:{approx_ms / step:.1f}ms tok/s:{args.train_batch_tokens / (step_ms / 1000):.0f}")
+        if max_wc_ms and stop_after is None and approx_ms >= max_wc_ms:
+            stop_after = step
+        if args.checkpoint_every > 0 and step % args.checkpoint_every == 0:
+            save_checkpoint(step)
+
+    # Final checkpoint
+    save_checkpoint(step)
+
+    # Serialize
+    if master:
+        sd = {k: v for k, v in base_model.state_dict().items()}
+        out = f"logs/{args.run_id}_model.pt"
+        torch.save(sd, out)
+        log0(f"saved:{out} bytes:{Path(out).stat().st_size}")
+
+        qobj, qstats = quantize_state_dict_int8(sd)
+        buf = io.BytesIO()
+        torch.save(qobj, buf)
+        compressed = zlib.compress(buf.getvalue(), 9)
+        qpath = f"logs/{args.run_id}_model.int8.ptz"
+        Path(qpath).write_bytes(compressed)
+        log0(f"quantized:{qpath} bytes:{len(compressed)} ratio:{qstats['baseline_tensor_bytes'] / max(qstats['int8_payload_bytes'], 1):.2f}x")
+
+        if args.roundtrip_eval:
+            dq = dequantize_state_dict_int8(torch.load(io.BytesIO(zlib.decompress(Path(qpath).read_bytes())), weights_only=False))
+            base_model.load_state_dict(dq, strict=False)
+            qvl, qvbpb = eval_val(args, model, rank, world_size, device, grad_accum_steps, val_tokens, bbl, hsl, ibl)
+            log0(f"final_int8_zlib_roundtrip val_loss:{qvl:.4f} val_bpb:{qvbpb:.4f}")
+
+        # Write manifest
+        manifest = {
+            "run_id": args.run_id,
+            "model_version": args.model_version,
+            "params": n_params,
+            "trainable": n_trainable,
+            "raw_bytes": raw_bytes,
+            "est_int8_bytes": est_int8_bytes,
+            "quantized_bytes": len(compressed),
+            "vocab_size": args.vocab_size,
+            "num_steps": args.num_steps,
+            "n_channels": getattr(args, "n_channels", None),
+            "n_fourier_basis": getattr(args, "n_fourier_basis", None),
+            "state_dim": getattr(args, "state_dim", None),
+            "inner_dim": getattr(args, "inner_dim", None),
+            "n_ops": getattr(args, "n_ops", None),
+            "lr": args.lr,
+            "activation": args.activation,
+            "decay_init": args.decay_init,
+            "steps_trained": step,
+            "final_train_loss": train_loss_accum if step > start_step else None,
+            "val_loss": vl,
+            "val_bpb": vbpb,
+            "train_time_ms": train_ms,
+            "world_size": world_size,
+            "grad_accum_steps": grad_accum_steps,
+            "batch_tokens": args.train_batch_tokens,
+            "model_path": out,
+            "quantized_path": qpath,
+        }
+        manifest_path = f"logs/{args.run_id}_manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+        log0(f"manifest:{manifest_path}")
+
+
+if __name__ == "__main__":
+    main()
+
+[23:40:22] [config]
+{
+  "DataConfig": {
+    "data_path": "./data/datasets/fineweb10B_sp1024",
+    "tokenizer_path": "./data/tokenizers/fineweb_1024_bpe.model",
+    "train_files": "./data/datasets/fineweb10B_sp1024/fineweb_train_*.bin",
+    "val_files": "./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin"
+  },
+  "RunConfig": {
+    "run_id": "c8b7a7a1-8ca2-49a5-ac57-3453f13a19c9",
+    "resume_from": "",
+    "checkpoint_every": 500,
+    "seed": 1337
+  },
+  "ScheduleConfig": {
+    "val_batch_size": 524288,
+    "val_loss_every": 50,
+    "train_log_every": 10,
+    "iterations": 999999,
+    "warmdown_iters": 1200,
+    "warmup_steps": 5,
+    "train_batch_tokens": 491520,
+    "train_seq_len": 1024,
+    "max_wallclock_seconds": 300.0
+  },
+  "ModelCommonConfig": {
+    "model_version": "v8_graph",
+    "vocab_size": 1024,
+    "num_steps": 8,
+    "n_fourier_basis": 16,
+    "n_channels": 128,
+    "activation": "gelu",
+    "logit_softcap": 30.0,
+    "decay_init": 3.0
+  },
+  "V1Config": {
+    "num_heads": 8,
+    "num_kv_heads": 4,
+    "rope_base": 10000.0,
+    "qk_gain_init": 1.5
+  },
+  "V2Config": {
+    "kernel_size": 16
+  },
+  "V4Config": {
+    "n_heads": 4,
+    "transform_rank": 8,
+    "unique_steps": 5,
+    "invocations_per_step": 2
+  },
+  "WaveConfig": {
+    "slow_decay_init": 4.0,
+    "fast_decay_init": 2.0,
+    "band_split": "4,4,8"
+  },
+  "LgpConfig": {
+    "n_ops": 8
+  },
+  "GraphConfig": {
+    "interaction_rank": 8
+  },
+  "MetaStateConfig": {
+    "state_dim": 64,
+    "inner_dim": 128
+  },
+  "TpgConfig": {
+    "gumbel_tau": 1.0,
+    "halt_threshold": 0.5,
+    "ponder_lambda": 0.01
+  },
+  "SparseRegisterConfig": {
+    "k_active": 256,
+    "inner_mul": 2,
+    "parallel_waves": true,
+    "grad_checkpoint": false,
+    "embed_dim": 128
+  },
+  "PredictiveConfig": {
+    "sparsity_k": 128,
+    "aux_loss_weight": 0.1,
+    "aux_loss_decay": 0.9
+  },
+  "ColumnarConfig": {
+    "num_columns": 4,
+    "steps_per_column": 3,
+    "n_branches": 4
+  },
+  "OptimizerConfig": {
+    "lr": 0.03,
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "adam_eps": 1e-08,
+    "weight_decay": 0.0,
+    "grad_clip_norm": 1.0
+  },
+  "DistributedConfig": {
+    "nccl_p2p_disable": "1",
+    "grad_accum_steps": 16,
+    "torch_compile": false,
+    "roundtrip_eval": false
+  }
+}
+[23:40:22] [init] rank=0 world_size=3 device=cuda:0 model_version=v8_graph
+[23:40:22] [init] loading tokenizer from ./data/tokenizers/fineweb_1024_bpe.model
+[23:40:22] [init] loading validation data from ./data/datasets/fineweb10B_sp1024/fineweb_val_*.bin
+[23:40:23] [init] data loaded: 62021633 val tokens
+[23:40:23] [init] model built: 164K params on cuda:0
+[23:40:23] [init] wrapping with DDP (distributed=True)
+[23:40:23] [init] DDP ready
+[23:40:23] run_id:c8b7a7a1-8ca2-49a5-ac57-3453f13a19c9
+[23:40:23] model_version:v8_graph
+[23:40:23] model_params:163881 trainable:163881 vocab=dim=1024 raw:0.4MB est_int8:0.2MB
+[23:40:23] steps:8 channels:128 fourier:16
+[23:40:23] activation:gelu lr:0.03 grad_clip:1.0 decay_init:3.0
+[23:40:23] NO attention. NO embedding. NO output projection.
+[23:40:23] world_size:3 grad_accum:16 batch:491520
+[23:40:23] [init] loading training data from ./data/datasets/fineweb10B_sp1024/fineweb_train_*.bin
+[23:40:23] [init] starting warmup (5 steps)
+[23:40:33] warmup:5/5
+[23:41:44] step:0/999999 val_loss:7.2599 val_bpb:4.2997 train_time:0ms
+[23:41:46] step:1/999999 train_loss:7.2605 time:1818ms avg:1818.0ms tok/s:270385
+[23:41:48] step:2/999999 train_loss:7.2069 time:3642ms avg:1821.0ms tok/s:270172
+[23:41:50] step:3/999999 train_loss:7.2007 time:5466ms avg:1821.9ms tok/s:270168
+[23:41:52] step:4/999999 train_loss:7.1956 time:7288ms avg:1822.1ms tok/s:270399
+[23:41:53] step:5/999999 train_loss:7.2349 time:9110ms avg:1821.9ms tok/s:270493
+[23:41:55] step:6/999999 train_loss:7.1772 time:10931ms avg:1821.9ms tok/s:270447
+[23:41:57] step:7/999999 train_loss:7.1635 time:12753ms avg:1821.9ms tok/s:270459
+[23:41:59] step:8/999999 train_loss:7.1469 time:14576ms avg:1822.0ms tok/s:270307
+[23:42:01] step:9/999999 train_loss:7.1358 time:16403ms avg:1822.5ms tok/s:270381
+[23:42:02] step:10/999999 train_loss:7.1163 time:18226ms avg:1822.6ms tok/s:270228
+[23:42:21] step:20/999999 train_loss:6.9045 time:36412ms avg:1820.6ms tok/s:270321
+[23:42:39] step:30/999999 train_loss:6.6910 time:54594ms avg:1819.8ms tok/s:270274
+[23:42:57] step:40/999999 train_loss:6.7432 time:72775ms avg:1819.4ms tok/s:270295
+[23:43:15] step:50/999999 train_loss:6.5779 time:90970ms avg:1819.4ms tok/s:270055
+[23:44:27] step:50/999999 val_loss:6.2997 val_bpb:3.7310 train_time:90973ms
+[23:44:45] step:60/999999 train_loss:6.3518 time:109155ms avg:1819.3ms tok/s:270476
+[23:45:03] step:70/999999 train_loss:6.0358 time:127354ms avg:1819.3ms tok/s:270184
+[23:45:21] step:80/999999 train_loss:6.1988 time:145561ms avg:1819.5ms tok/s:270023
+[23:45:39] step:90/999999 train_loss:5.7137 time:163744ms avg:1819.4ms tok/s:269834
+[23:45:58] step:100/999999 train_loss:5.2675 time:181934ms avg:1819.3ms tok/s:270455
+[23:47:09] step:100/999999 val_loss:5.2354 val_bpb:3.1007 train_time:181938ms
+[23:47:27] step:110/999999 train_loss:5.0084 time:200157ms avg:1819.6ms tok/s:269691
+[23:47:46] step:120/999999 train_loss:5.0431 time:218414ms avg:1820.1ms tok/s:268433
+[23:48:04] step:130/999999 train_loss:5.0241 time:236693ms avg:1820.7ms tok/s:269120
+[23:48:22] step:140/999999 train_loss:4.8588 time:254941ms avg:1821.0ms tok/s:269398
+[23:48:40] step:150/999999 train_loss:4.8728 time:273177ms avg:1821.2ms tok/s:269446
+[23:49:52] step:150/999999 val_loss:4.8642 val_bpb:2.8808 train_time:273182ms
+[23:50:10] step:160/999999 train_loss:4.8356 time:291435ms avg:1821.5ms tok/s:270203
+[23:51:31] step:165/999999 val_loss:4.8395 val_bpb:2.8662 train_time:300537ms
+[23:51:31] stopping_early: step:165/999999
+[23:51:31] checkpoint:logs/c8b7a7a1-8ca2-49a5-ac57-3453f13a19c9_ckpt.pt step:165
+[23:51:31] saved:logs/c8b7a7a1-8ca2-49a5-ac57-3453f13a19c9_model.pt bytes:423938
+[23:51:31] quantized:logs/c8b7a7a1-8ca2-49a5-ac57-3453f13a19c9_model.int8.ptz bytes:329804 ratio:1.00x
+[23:51:31] manifest:logs/c8b7a7a1-8ca2-49a5-ac57-3453f13a19c9_manifest.json
