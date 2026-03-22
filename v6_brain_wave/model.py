@@ -31,6 +31,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 # ---------------------------------------------------------------------------
 # Fourier basis (shared with v3)
@@ -264,7 +266,7 @@ class OscillatoryCycle(nn.Module):
 # BrainWaveGPT: the full model
 # ---------------------------------------------------------------------------
 
-class BrainWaveGPT(nn.Module):
+class BrainWaveGPT(AgiModel):
     """Oscillatory language model with cross-frequency coupling.
 
     Not a transformer. Cross-position mixing via band-specific associative
@@ -274,6 +276,23 @@ class BrainWaveGPT(nn.Module):
     Input:  one-hot(token) → register state in R^V
     Output: register state IS the prediction (no output projection)
     """
+
+    version = "v6_wave"
+    architecture = "Oscillatory dynamics"
+    cross_position = "Cross-frequency coupling (theta/gamma)"
+    within_position = "Band-specific register ops"
+
+    class Settings(CommonSettings):
+        slow_decay_init: float = 4.0
+        fast_decay_init: float = 2.0
+        band_split: str = "4,4,8"
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        kw = super().build_kwargs(args)
+        kw['num_cycles'] = kw.pop('num_steps')
+        kw['band_split'] = tuple(int(x) for x in kw.pop('band_split', '4,4,8').split(','))
+        return kw
 
     def __init__(self, vocab_size: int = 1024, num_cycles: int = 8,
                  n_fourier_basis: int = 16, n_channels: int = 128,

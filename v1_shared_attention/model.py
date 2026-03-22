@@ -30,6 +30,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 # ---------------------------------------------------------------------------
 # Attention
@@ -180,7 +182,7 @@ class FourierRegisterOp(nn.Module):
 # RegisterGPT
 # ---------------------------------------------------------------------------
 
-class RegisterGPT(nn.Module):
+class RegisterGPT(AgiModel):
     """Language model where registers ARE words.
 
     No embedding matrix — input is one-hot.
@@ -188,6 +190,17 @@ class RegisterGPT(nn.Module):
     Hidden dimension = vocabulary size.
     Every intermediate state is a named distribution over words.
     """
+
+    version = "v1_attention"
+    architecture = "Shared attention"
+    cross_position = "GQA + RoPE (shared weights)"
+    within_position = "Fourier register ops"
+
+    class Settings(CommonSettings):
+        num_heads: int = 8
+        num_kv_heads: int = 4
+        rope_base: float = 10000.0
+        qk_gain_init: float = 1.5
 
     def __init__(self, vocab_size: int = 1024, num_heads: int = 8,
                  num_kv_heads: int = 4, num_steps: int = 24,

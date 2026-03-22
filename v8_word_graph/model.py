@@ -20,7 +20,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
+
+from core.base import AgiModel
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +147,7 @@ class GraphHop(nn.Module):
 # WordGraphGPT
 # ---------------------------------------------------------------------------
 
-class WordGraphGPT(nn.Module):
+class WordGraphGPT(AgiModel):
     """Language model as a word interaction graph.
 
     Multiple hops through a learned word-to-word graph.
@@ -156,6 +159,25 @@ class WordGraphGPT(nn.Module):
 
     No attention. No embedding. No output projection. No Fourier basis.
     """
+
+    version = "v8_graph"
+    architecture = "Word graph"
+    cross_position = "Word activation similarity"
+    within_position = "Low-rank word interaction"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 8
+        interaction_rank: int = 64
+        logit_softcap: float = 30.0
+        activation: str = "gelu"
+        decay_init: float = 3.0
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        kw = super().build_kwargs(args)
+        kw['num_hops'] = kw.pop('num_steps')
+        return kw
 
     def __init__(self, vocab_size: int = 1024, num_hops: int = 8,
                  interaction_rank: int = 64, logit_softcap: float = 30.0,

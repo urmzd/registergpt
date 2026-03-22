@@ -25,7 +25,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
+
+from core.base import AgiModel
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +270,7 @@ class TPGStep(nn.Module):
 # TPGGPT: the full model
 # ---------------------------------------------------------------------------
 
-class TPGGPT(nn.Module):
+class TPGGPT(AgiModel):
     """Neural TPG for language modeling.
 
     - Hard Gumbel routing on activation selection (conditional behavior)
@@ -276,6 +279,28 @@ class TPGGPT(nn.Module):
 
     No Fourier. No attention. No embedding. No output projection.
     """
+
+    version = "v11_tpg"
+    architecture = "Neural TPG"
+    cross_position = "Multi-scale Q-table (3 decays)"
+    within_position = "Hard Gumbel routing"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 8
+        state_dim: int = 64
+        inner_dim: int = 128
+        logit_softcap: float = 30.0
+        tau: float = 1.0
+        halt_threshold: float = 0.5
+        ponder_lambda: float = 0.01
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        kw = super().build_kwargs(args)
+        if hasattr(args, 'gumbel_tau') and 'tau' not in kw:
+            kw['tau'] = args.gumbel_tau
+        return kw
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  state_dim: int = 64, inner_dim: int = 128,

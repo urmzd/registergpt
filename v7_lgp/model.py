@@ -27,6 +27,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 def make_fourier_basis(dim: int, n_basis: int) -> Tensor:
     pos = torch.arange(dim, dtype=torch.float32) / dim
@@ -203,7 +205,7 @@ class ProgramStep(nn.Module):
 # LGPGPT: the full model
 # ---------------------------------------------------------------------------
 
-class LGPGPT(nn.Module):
+class LGPGPT(AgiModel):
     """Differentiable register machine with a learned program.
 
     The model IS a program: a sequence of instructions that read registers,
@@ -212,6 +214,20 @@ class LGPGPT(nn.Module):
 
     No attention. No embedding. No output projection.
     """
+
+    version = "v7_lgp"
+    architecture = "Learned program"
+    cross_position = "Causal decay memory"
+    within_position = "Learned program (op bank)"
+
+    class Settings(CommonSettings):
+        n_ops: int = 8
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        kw = super().build_kwargs(args)
+        kw['num_instructions'] = kw.pop('num_steps')
+        return kw
 
     def __init__(self, vocab_size: int = 1024, num_instructions: int = 16,
                  n_fourier_basis: int = 16, n_channels: int = 64,

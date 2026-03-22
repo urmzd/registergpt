@@ -24,7 +24,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
+
+from core.base import AgiModel
 
 
 class CausalDecayMemory(nn.Module):
@@ -166,7 +169,7 @@ class PredictiveRegisterStep(nn.Module):
         return x
 
 
-class PredictiveGPT(nn.Module):
+class PredictiveGPT(AgiModel):
     """Predictive register machine with per-step auxiliary losses.
 
     Each step produces an intermediate prediction that gets its own
@@ -176,6 +179,28 @@ class PredictiveGPT(nn.Module):
 
     Register states are sparsified after each step via top-k masking.
     """
+
+    version = "v15_predictive"
+    architecture = "Predictive coding"
+    cross_position = "Causal decay (sparse)"
+    within_position = "MLP + per-step supervision"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 8
+        k_active: int = 256
+        inner_mul: int = 2
+        logit_softcap: float = 30.0
+        activation: str = "gelu"
+        decay_init: float = 3.0
+        sparsity_k: int = 128
+        aux_loss_weight: float = 0.1
+        aux_loss_decay: float = 0.9
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        fields = cls.Settings.model_fields
+        return {k: getattr(args, k) for k in fields if hasattr(args, k)}
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  k_active: int = 256, inner_mul: int = 2,

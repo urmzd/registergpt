@@ -26,6 +26,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+from pydantic_settings import BaseSettings
+
 
 # ---------------------------------------------------------------------------
 # Depthwise causal convolution (replaces attention)
@@ -130,7 +133,7 @@ class RegisterStep(nn.Module):
 # RegisterGPT v2
 # ---------------------------------------------------------------------------
 
-class RegisterGPT(nn.Module):
+class RegisterGPT(AgiModel):
     """Attention-free language model where registers ARE words.
 
     No embedding matrix — input is one-hot.
@@ -138,6 +141,20 @@ class RegisterGPT(nn.Module):
     No attention — depthwise causal convolutions for cross-position mixing.
     Many cheap unique steps instead of few expensive shared ones.
     """
+
+    version = "v2_conv"
+    architecture = "Causal convolution"
+    cross_position = "Depthwise causal convolution"
+    within_position = "Fourier register ops"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 48
+        kernel_size: int = 16
+        n_fourier_basis: int = 16
+        n_channels: int = 64
+        logit_softcap: float = 30.0
+        activation: str = "gelu"
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 48,
                  kernel_size: int = 16, n_fourier_basis: int = 16,

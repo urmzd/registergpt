@@ -24,7 +24,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
+
+from core.base import AgiModel
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +208,7 @@ class PolicyStep(nn.Module):
 # PolicyGPT
 # ---------------------------------------------------------------------------
 
-class PolicyGPT(nn.Module):
+class PolicyGPT(AgiModel):
     """Language model as state-dependent policy execution.
 
     Each step: observe register state → policy selects action →
@@ -217,6 +220,19 @@ class PolicyGPT(nn.Module):
 
     No Fourier. No attention. No embedding. No output projection.
     """
+
+    version = "v10_policy"
+    architecture = "Policy execution"
+    cross_position = "Causal decay + policy"
+    within_position = "State-dependent ops"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 8
+        state_dim: int = 64
+        n_ops: int = 8
+        logit_softcap: float = 30.0
+        decay_init: float = 3.0
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  state_dim: int = 64, n_ops: int = 8,

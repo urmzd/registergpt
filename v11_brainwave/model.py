@@ -17,7 +17,10 @@ No attention. No embedding. No output projection.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
+
+from core.base import AgiModel
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +197,7 @@ class BrainWaveStep(nn.Module):
 # BrainWaveGPT v11
 # ---------------------------------------------------------------------------
 
-class BrainWaveGPT(nn.Module):
+class BrainWaveGPT(AgiModel):
     """Language model as composed brain oscillations.
 
     Five operations per step, each a direct analogue of a brain wave:
@@ -202,6 +205,19 @@ class BrainWaveGPT(nn.Module):
 
     No Fourier. No attention. No embedding. No output projection.
     """
+
+    version = "v11_brainwave"
+    architecture = "BrainWave v2"
+    cross_position = "EMA + causal decay"
+    within_position = "Oscillatory primitives"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 8
+        state_dim: int = 64
+        inner_dim: int = 128
+        gate_dim: int = 64
+        logit_softcap: float = 30.0
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  state_dim: int = 64, inner_dim: int = 128,

@@ -26,6 +26,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 # ---------------------------------------------------------------------------
 # Fourier basis
@@ -174,13 +176,20 @@ class RegisterStep(nn.Module):
 # RegisterGPT v3
 # ---------------------------------------------------------------------------
 
-class RegisterGPT(nn.Module):
+class RegisterGPT(AgiModel):
     """Register machine with associative memory.
 
     No embedding. No output projection. No attention.
     Cross-position via decay-weighted associative memory (parallel).
     Within-position via Fourier register ops.
     """
+
+    version = "v3_assoc"
+    architecture = "Associative memory"
+    cross_position = "Decay-weighted associative memory"
+    within_position = "Fourier register ops"
+
+    Settings = CommonSettings
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  n_fourier_basis: int = 16, n_channels: int = 128,

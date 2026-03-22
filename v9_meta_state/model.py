@@ -35,7 +35,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
+
+from core.base import AgiModel
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +164,7 @@ class MetaStateStep(nn.Module):
 # MetaStateGPT
 # ---------------------------------------------------------------------------
 
-class MetaStateGPT(nn.Module):
+class MetaStateGPT(AgiModel):
     """Register machine with Q-table meta-state.
 
     Cross-position: evolving Q-table (dense projections, no Fourier)
@@ -174,6 +177,20 @@ class MetaStateGPT(nn.Module):
 
     No Fourier. No attention. No embedding. No output projection.
     """
+
+    version = "v9_meta"
+    architecture = "Meta-state Q-table"
+    cross_position = "Evolving Q-table (dense)"
+    within_position = "Dense MLP"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 8
+        state_dim: int = 64
+        inner_dim: int = 128
+        logit_softcap: float = 30.0
+        activation: str = "gelu"
+        decay_init: float = 3.0
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  state_dim: int = 64, inner_dim: int = 128,

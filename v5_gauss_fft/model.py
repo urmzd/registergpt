@@ -29,6 +29,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 # ---------------------------------------------------------------------------
 # FFT-based projection: vocab → channels (Gauss, 1805)
@@ -241,7 +243,7 @@ class GaussRegisterStep(nn.Module):
 # GaussRegisterGPT
 # ---------------------------------------------------------------------------
 
-class GaussRegisterGPT(nn.Module):
+class GaussRegisterGPT(AgiModel):
     """Register machine with FFT-based operations.
 
     Gauss's mathematical framework applied to RegisterGPT:
@@ -252,6 +254,20 @@ class GaussRegisterGPT(nn.Module):
 
     No embedding. No output projection. No attention. No stored Fourier basis.
     """
+
+    version = "v5_gauss"
+    architecture = "Gaussian FFT"
+    cross_position = "FFT-based associative memory"
+    within_position = "FFT register ops"
+
+    class Settings(CommonSettings):
+        pass
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        kw = super().build_kwargs(args)
+        kw['n_freq'] = kw.pop('n_fourier_basis', args.n_fourier_basis)
+        return kw
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  n_freq: int = 64, n_channels: int = 128,

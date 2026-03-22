@@ -22,6 +22,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 def make_dct_basis(dim: int, n_basis: int) -> Tensor:
     """DCT-II basis functions over vocabulary indices.
@@ -228,7 +230,7 @@ class AdaptiveRegisterStep(nn.Module):
         return x
 
 
-class AdaptiveGPT(nn.Module):
+class AdaptiveGPT(AgiModel):
     """Adaptive register machine with data-dependent dynamics.
 
     Combines v2's causal convolution (best throughput) with v12's sparse
@@ -237,6 +239,20 @@ class AdaptiveGPT(nn.Module):
     - Input-dependent conv modulation (Hyena)
     - DCT basis (better energy compaction)
     """
+
+    version = "v14_adaptive"
+    architecture = "Adaptive dynamics"
+    cross_position = "Adaptive conv + adaptive decay"
+    within_position = "DCT register ops"
+
+    class Settings(CommonSettings):
+        k_active: int = 256
+        kernel_size: int = 16
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        fields = cls.Settings.model_fields
+        return {k: getattr(args, k) for k in fields if hasattr(args, k)}
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 8,
                  k_active: int = 256, kernel_size: int = 16,

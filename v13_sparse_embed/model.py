@@ -25,8 +25,11 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as grad_checkpoint_fn
+
+from core.base import AgiModel
 
 
 class CausalDecayMemory(nn.Module):
@@ -174,7 +177,7 @@ def _compute_waves(steps: nn.ModuleList) -> list[list[int]]:
     return waves
 
 
-class SparseEmbedGPT(nn.Module):
+class SparseEmbedGPT(AgiModel):
     """Sparse register machine with learned factored embedding.
 
     Identical to v12 SparseRegisterGPT except the one-hot init is replaced
@@ -182,6 +185,23 @@ class SparseEmbedGPT(nn.Module):
 
     This gives tokens a learned similarity structure in register space.
     """
+
+    version = "v13_embed"
+    architecture = "Sparse embed"
+    cross_position = "Causal decay (k-subspace)"
+    within_position = "Factored embedding"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 12
+        embed_dim: int = 128
+        k_active: int = 256
+        inner_mul: int = 2
+        logit_softcap: float = 30.0
+        activation: str = "gelu"
+        decay_init: float = 3.0
+        parallel_waves: bool = True
+        grad_checkpoint: bool = False
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 12,
                  embed_dim: int = 128, k_active: int = 256, inner_mul: int = 2,

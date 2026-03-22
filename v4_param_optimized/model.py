@@ -44,6 +44,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 # ---------------------------------------------------------------------------
 # Fourier basis (shared with v3)
@@ -263,7 +265,7 @@ class RegisterStep(nn.Module):
 # RegisterGPT v4
 # ---------------------------------------------------------------------------
 
-class RegisterGPTv4(nn.Module):
+class RegisterGPTv4(AgiModel):
     """Parameter-golf-optimized register machine.
 
     Manages shared Q/K projections, step reuse with per-invocation overrides.
@@ -274,6 +276,17 @@ class RegisterGPTv4(nn.Module):
     so the same weights behave differently at different depths. This is
     analogous to universal transformers with per-layer scalar modulation.
     """
+
+    version = "v4_golf"
+    architecture = "Parameter-optimized"
+    cross_position = "Multi-head associative memory (shared Q/K)"
+    within_position = "Factored register ops"
+
+    class Settings(CommonSettings):
+        unique_steps: int = 5
+        invocations_per_step: int = 2
+        n_heads: int = 4
+        transform_rank: int = 8
 
     def __init__(self, vocab_size: int = 1024, unique_steps: int = 5,
                  invocations_per_step: int = 2, n_fourier_basis: int = 16,

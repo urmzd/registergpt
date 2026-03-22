@@ -26,6 +26,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from core.base import AgiModel, CommonSettings
+
 
 def make_fourier_basis(dim: int, n_basis: int) -> Tensor:
     pos = torch.arange(dim, dtype=torch.float32) / dim
@@ -215,7 +217,7 @@ class CorticalColumn(nn.Module):
         return x
 
 
-class ColumnarGPT(nn.Module):
+class ColumnarGPT(AgiModel):
     """Multi-column register machine with voting.
 
     C independent cortical columns each process the input through their
@@ -225,6 +227,23 @@ class ColumnarGPT(nn.Module):
     Columns naturally specialize through training pressure — one may
     track syntax, another semantics, another entity mentions.
     """
+
+    version = "v16_columnar"
+    architecture = "Multi-column voting"
+    cross_position = "Causal decay (per-column)"
+    within_position = "Dendritic MLP"
+
+    class Settings(CommonSettings):
+        num_columns: int = 4
+        steps_per_column: int = 3
+        k_active: int = 128
+        inner_mul: int = 2
+        n_branches: int = 4
+
+    @classmethod
+    def build_kwargs(cls, args) -> dict:
+        fields = cls.Settings.model_fields
+        return {k: getattr(args, k) for k in fields if hasattr(args, k)}
 
     def __init__(self, vocab_size: int = 1024, num_columns: int = 4,
                  steps_per_column: int = 3, k_active: int = 128,

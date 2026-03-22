@@ -33,8 +33,11 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pydantic_settings import BaseSettings
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as grad_checkpoint_fn
+
+from core.base import AgiModel
 
 
 class CausalDecayMemory(nn.Module):
@@ -208,7 +211,7 @@ def _compute_waves(steps: nn.ModuleList) -> list[list[int]]:
     return waves
 
 
-class SparseRegisterGPT(nn.Module):
+class SparseRegisterGPT(AgiModel):
     """Language model with sparse register addressing.
 
     Each step reads from k source registers and writes to k (different)
@@ -226,6 +229,22 @@ class SparseRegisterGPT(nn.Module):
 
     No embedding. No output projection. No Fourier. No attention.
     """
+
+    version = "v12_sparse"
+    architecture = "Sparse register"
+    cross_position = "Causal decay (k-subspace)"
+    within_position = "MLP in k-subspace"
+
+    class Settings(BaseSettings):
+        vocab_size: int = 1024
+        num_steps: int = 12
+        k_active: int = 256
+        inner_mul: int = 2
+        logit_softcap: float = 30.0
+        activation: str = "gelu"
+        decay_init: float = 3.0
+        parallel_waves: bool = True
+        grad_checkpoint: bool = False
 
     def __init__(self, vocab_size: int = 1024, num_steps: int = 12,
                  k_active: int = 256, inner_mul: int = 2,
